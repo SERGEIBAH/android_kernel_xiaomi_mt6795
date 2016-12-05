@@ -35,6 +35,10 @@ ifeq ($(CONFIG_TOUCHSCREEN_MTK_GT9XX_HOTKNOT),y)
 obj-y	+=  GT9XX_hotknot/
 endif
 
+ifeq ($(CONFIG_TOUCHSCREEN_MTK_GT9XX_HOTKNOT_WEAR),y)
+obj-y	+=  GT9XX_hotknot_wear/
+endif
+
 ifeq ($(CONFIG_TOUCHSCREEN_MTK_GT818B_FPGA),y)
 obj-y	+=  GT818B-fpga/
 endif
@@ -47,14 +51,16 @@ ifeq ($(CONFIG_TOUCHSCREEN_S7020),y)
 obj-y	+=  S7020/
 endif
 
-obj-$(CONFIG_TOUCHSCREEN_MTK_GT9XX_HOTKNOT_SCP)	+=  GT9XX_hotknot_SCP/
-
 ifeq ($(CONFIG_GT9XX_HOTKNOT_FLASHLESS),y)
 obj-y	+=  GT9XX_hotknot_FLASHLESS/
 endif
 
 ifeq ($(CONFIG_MTK_GT9XX),y)
 obj-y	+=  GT9XX/
+endif
+
+ifeq ($(CONFIG_TOUCHSCREEN_MTK_GT910),y)
+obj-y	+=  GT910/
 endif
 
 ifeq ($(CONFIG_TOUCHSCREEN_MTK_FTS2A052),y)
@@ -73,6 +79,10 @@ ifeq ($(CONFIG_MTK_S3320_47),y)
 obj-y	+=  synaptics_3320_47/
 endif
 
+ifeq ($(CONFIG_MTK_S3320_50),y)
+obj-y	+=  synaptics_3320_50/
+endif
+
 ifeq ($(CONFIG_MTK_MMS134),y)
 obj-y	+=  mms134/
 endif
@@ -89,8 +99,8 @@ ifeq ($(CONFIG_TOUCHSCREEN_SYNAPTICS_S3528),y)
 obj-y   +=  synaptics_3528/
 endif
 
-ifeq ($(CONFIG_TOUCHSCREEN_MTK_SYNAPTICS_S3528_2),y)
-obj-y   +=  synaptics_3528_2/
+ifeq ($(CONFIG_TOUCHSCREEN_SYNAPTICS),y)
+obj-y   +=  synaptics/
 endif
 
 ifeq ($(CONFIG_MTK_S7020),y)
@@ -109,8 +119,8 @@ ifeq ($(CONFIG_MTK_FT5406_82),y)
 obj-y	+=  ft5406_82/
 endif
 
-ifeq ($(CONFIG_MTK_FT5206),y)
-obj-y	+=  ft5206/
+ifeq ($(CONFIG_MTK_FT5X0X),y)
+obj-y	+=  ft5x0x/
 endif
 
 ifeq ($(CONFIG_TOUCHSCREEN_MTK_GT9XX_2),y)
@@ -119,4 +129,24 @@ endif
 
 ifeq ($(CONFIG_MTK_MIT200),y)
 obj-y	+=  melfas_mit200/
+endif
+
+ifeq ($(CONFIG_MTK_GT911),y)
+obj-y	+=  GT911/
+endif
+
+ifeq ($(CONFIG_MTK_GT911TB_HOTKNOT),y)
+obj-y	+=  GT911TB_HOTKNOT/
+endif
+
+ifeq ($(CONFIG_TOUCHSCREEN_MTK_ATMEL_MXT336),y)
+obj-y	+=  ATMEL_MXT336/
+endif
+
+ifeq ($(CONFIG_MTK_FT5436I),y)
+obj-y	+=  ft5436i/
+endif
+
+ifeq ($(CONFIG_MTK_FT5206),y)
+obj-y	+=  ft5206/
 endif

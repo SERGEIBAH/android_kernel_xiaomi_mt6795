@@ -1,5 +1,3 @@
-#define pr_fmt(fmt)		"[VcoreFS] " fmt
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -21,6 +19,7 @@
 #include <mach/mt_dramc.h>
 #include <mach/mt_spm.h>
 #include <mach/mt_clkmgr.h>
+#include <mach/mt_smi.h>
 #include <mach/mt_ptp.h>
 #include <mach/board.h>
 #include <mt_sd_func.h>
@@ -58,6 +57,19 @@
 
 #define DVFS_DELAY_IGNORE_MS	10
 
+/* debug log flag */
+#define DLF_DVS_S		(1U << 0)
+#define DLF_DVS_E		(1U << 1)
+#define DLF_DFS_DDR		(1U << 2)
+#define DLF_DFS_AXI		(1U << 3)
+#define DLF_KICK_S		(1U << 4)
+#define DLF_KICK_E		(1U << 5)
+#define DLF_REQ			(1U << 6)
+#define DLF_REQ_DLY		(1U << 7)
+#define DLF_SDIO		(1U << 8)
+#define DLF_SDIO_OT		(1U << 9)
+#define DLF_SOFF		(1U << 10)
+
 
 /**************************************
  * Macro and Inline
@@ -83,14 +95,20 @@ static struct kobj_attribute _name##_attr = {	\
 
 #define __ATTR_OF(_name)	(&_name##_attr.attr)
 
-#define vcorefs_emerg(fmt, args...)	pr_emerg(fmt, ##args)
-#define vcorefs_alert(fmt, args...)	pr_alert(fmt, ##args)
-#define vcorefs_crit(fmt, args...)	pr_crit(fmt, ##args)
-#define vcorefs_err(fmt, args...)	pr_err(fmt, ##args)
-#define vcorefs_warn(fmt, args...)	pr_warn(fmt, ##args)
-#define vcorefs_notice(fmt, args...)	pr_notice(fmt, ##args)
-#define vcorefs_info(fmt, args...)	pr_info(fmt, ##args)
-#define vcorefs_debug(fmt, args...)	pr_info(fmt, ##args)	/* pr_debug show nothing */
+#define vcorefs_crit(fmt, args...)	pr_err("[VcoreFS] " fmt, ##args)
+#define vcorefs_err(fmt, args...)	pr_err("[VcoreFS] " fmt, ##args)
+#define vcorefs_warn(fmt, args...)	pr_warn("[VcoreFS] " fmt, ##args)
+#define vcorefs_debug(fmt, args...)	pr_debug("[VcoreFS] " fmt, ##args)
+
+#define vcorefs_dbgx(flag, fmt, args...)		\
+do {							\
+	if (dbgx_log_en & DLF_##flag)			\
+		vcorefs_err(fmt, ##args);		\
+	else if (dbgx_log_en & (DLF_##flag << 16))	\
+		vcorefs_debug(fmt, ##args);		\
+	else						\
+		;					\
+} while (0)
 
 #define for_each_request_kicker(i)	for (i = KR_SYSFS; i < NUM_KICKERS; i++)
 
@@ -138,6 +156,9 @@ struct pwr_ctrl {
 	u32 curr_vcore_pdn;
 
 	/* for Freq control */
+#ifdef MMDVFS_MMCLOCK_NOTIFICATION
+	u8 mm_notify;
+#endif
 	u32 curr_ddr_khz;
 	u32 curr_axi_khz;
 	u32 curr_mm_khz;
@@ -197,13 +218,16 @@ static struct pwr_ctrl vcorefs_ctrl = {
 	.ddr_dfs		= 1,
 	.axi_dfs		= 1,
 	.sdio_lv_check		= 1,
-	.do_req_kick		= 1,
+	.do_req_kick		= 0,
 	.kr_req_mask		= (1U << NUM_KICKERS) - 1,
 	.soff_opp_index		= OPPI_LOW_PWR_2,
 	.son_dvfs_try		= 3,
 	.sdio_trans_pause	= 1,
 	.dma_dummy_read		= 1,
 	.curr_vcore_pdn		= VCORE_1_P_125,
+#ifdef MMDVFS_MMCLOCK_NOTIFICATION
+	.mm_notify		= 1,
+#endif
 	.curr_ddr_khz		= FDDR_S1_KHZ,
 	.curr_axi_khz		= FAXI_S1_KHZ,
 	.curr_mm_khz		= FMM_S1_KHZ,
@@ -216,6 +240,22 @@ static struct wake_lock delay_wakelock;
 static struct task_struct *vcorefs_ktask;
 static atomic_t kthread_nreq = ATOMIC_INIT(0);
 static DEFINE_MUTEX(vcorefs_mutex);
+
+/**
+ * dbgx_log_en[15:0] : show on UART/MobileLog
+ * dbgx_log_en[31:16]: show on MobileLog
+ */
+static u32 dbgx_log_en = /*DLF_DVS_S |*/
+			 /*DLF_DVS_E |*/
+			 /*DLF_DFS_DDR |*/
+			 /*DLF_DFS_AXI |*/
+			 DLF_KICK_S |
+			 /*DLF_KICK_E |*/
+			 DLF_REQ |
+			 /*DLF_REQ_DLY |*/
+			 DLF_SDIO |
+			 /*DLF_SDIO_OT |*/
+			 DLF_SOFF;
 
 
 /**************************************
@@ -234,6 +274,8 @@ static u32 get_vcore_pdn(void)
 
 static void __update_vcore_pdn(struct pwr_ctrl *pwrctrl, int steps)
 {
+	int loops;
+
 	mt_cpufreq_set_pmic_cmd(PMIC_WRAP_PHASE_NORMAL, IDX_NM_VCORE_PDN, pwrctrl->curr_vcore_pdn);
 
 	/* also need to update deep idle table for Vcore restore */
@@ -242,7 +284,7 @@ static void __update_vcore_pdn(struct pwr_ctrl *pwrctrl, int steps)
 	mt_cpufreq_apply_pmic_cmd(IDX_NM_VCORE_PDN);
 
 	if (pwrctrl->dma_dummy_read) {
-		int loops = (DRAM_WINDOW_SHIFT_MAX + (steps - 1)) / steps;
+		loops = (DRAM_WINDOW_SHIFT_MAX + (steps - 1)) / steps;
 		dma_dummy_read_for_vcorefs(loops);	/* for DQS gating window tracking */
 	} else {
 		udelay(DVFS_CMD_SETTLE_US);
@@ -261,7 +303,7 @@ static void set_vcore_pdn(struct pwr_ctrl *pwrctrl, u32 vcore_pdn)
 		__update_vcore_pdn(pwrctrl, steps);
 	}
 
-	vcorefs_crit("curr_pdn = 0x%x\n", pwrctrl->curr_vcore_pdn);
+	vcorefs_dbgx(DVS_E, "curr_pdn = 0x%x\n", pwrctrl->curr_vcore_pdn);
 
 #if VCORE_SET_CHECK
 	vcore_pdn = get_vcore_pdn();
@@ -276,11 +318,13 @@ static int set_vcore_with_opp(struct pwr_ctrl *pwrctrl, struct dvfs_opp *opp)
 
 	pwrctrl->curr_vcore_pdn = get_vcore_pdn();
 
-	vcorefs_crit("pdn = 0x%x, curr_pdn = 0x%x %s\n",
+	vcorefs_dbgx(DVS_S, "pdn = 0x%x, curr_pdn = 0x%x %s\n",
 		     opp->vcore_pdn, pwrctrl->curr_vcore_pdn, pwrctrl->vcore_dvs ? "" : "[X]");
 
-	if (pwrctrl->curr_vcore_pdn >= VCORE_INVALID)
+	if (pwrctrl->curr_vcore_pdn >= VCORE_INVALID) {
+		vcorefs_err("FAILED TO GET CURRENT VCORE\n");
 		return -EBUSY;
+	}
 
 	if (opp->vcore_pdn == pwrctrl->curr_vcore_pdn) {
 		curr_vcore_nml = opp->vcore_nml;
@@ -323,7 +367,7 @@ static int set_fddr_with_opp(struct pwr_ctrl *pwrctrl, struct dvfs_opp *opp)
 
 	pwrctrl->curr_ddr_khz = get_ddr_khz();
 
-	vcorefs_crit("ddr = %u, curr_ddr = %u %s\n",
+	vcorefs_dbgx(DFS_DDR, "ddr = %u, curr_ddr = %u %s\n",
 		     opp->ddr_khz, pwrctrl->curr_ddr_khz, pwrctrl->ddr_dfs ? "" : "[X]");
 
 	if (opp->ddr_khz == pwrctrl->curr_ddr_khz || !pwrctrl->ddr_dfs)
@@ -335,8 +379,10 @@ static int set_fddr_with_opp(struct pwr_ctrl *pwrctrl, struct dvfs_opp *opp)
 		spm_flags = (opp->ddr_khz >= FDDR_S2_KHZ ? SPM_DDR_HIGH_SPEED : 0);
 		r = spm_go_to_ddrdfs(spm_flags, 0);
 	}
-	if (r)
+	if (r) {
+		vcorefs_err("FAILED TO SET FDDR (%d)(%u, %u)\n", r, opp->ddr_khz, pwrctrl->curr_ddr_khz);
 		return r;
+	}
 
 	pwrctrl->curr_ddr_khz = opp->ddr_khz;
 
@@ -353,11 +399,16 @@ static int set_faxi_fxxx_with_opp(struct pwr_ctrl *pwrctrl, struct dvfs_opp *opp
 {
 	pwrctrl->curr_axi_khz = get_axi_khz();
 
-	vcorefs_crit("axi = %u, curr_axi = %u %s\n",
+	vcorefs_dbgx(DFS_AXI, "axi = %u, curr_axi = %u %s\n",
 		     opp->axi_khz, pwrctrl->curr_axi_khz, pwrctrl->axi_dfs ? "" : "[X]");
 
 	if (opp->axi_khz == pwrctrl->curr_axi_khz || !pwrctrl->axi_dfs)
 		return 0;
+
+#ifdef MMDVFS_MMCLOCK_NOTIFICATION
+	if (pwrctrl->mm_notify)
+		mmdvfs_mm_clock_switch_notify(1, opp->axi_khz > FAXI_S2_KHZ ? 1 : 0);
+#endif
 
 	/* change Faxi, Fmm, Fvenc, Fvdec between high/low speed */
 	clkmux_sel_for_vcorefs(opp->axi_khz > FAXI_S2_KHZ ? true : false);
@@ -366,6 +417,11 @@ static int set_faxi_fxxx_with_opp(struct pwr_ctrl *pwrctrl, struct dvfs_opp *opp
 	pwrctrl->curr_mm_khz = opp->mm_khz;
 	pwrctrl->curr_venc_khz = opp->venc_khz;
 	pwrctrl->curr_vdec_khz = opp->vdec_khz;
+
+#ifdef MMDVFS_MMCLOCK_NOTIFICATION
+	if (pwrctrl->mm_notify)
+		mmdvfs_mm_clock_switch_notify(0, opp->axi_khz > FAXI_S2_KHZ ? 1 : 0);
+#endif
 
 	return 0;
 }
@@ -463,8 +519,9 @@ static int __kick_dvfs_by_index(struct pwr_ctrl *pwrctrl, u32 index)
 	if (index == curr_opp_index) {
 		if (curr_opp_index == prev_opp_index)
 			return 0;
-		else	/* try again since previous change is partial success */
-			curr_opp_index = prev_opp_index;
+
+		/* try again since previous change is partial success */
+		curr_opp_index = prev_opp_index;
 	}
 
 	/* 0 (performance) <= index <= X (low power) */
@@ -481,7 +538,7 @@ static int __kick_dvfs_by_index(struct pwr_ctrl *pwrctrl, u32 index)
 		curr_opp_index = index;
 	}
 
-	vcorefs_crit("done: curr_index = %u (%u), err = %d\n",
+	vcorefs_dbgx(KICK_E, "done: curr_index = %u (%u), err = %d\n",
 		     curr_opp_index, prev_opp_index, err);
 
 	return err;
@@ -497,12 +554,15 @@ static int kick_dvfs_by_index(struct pwr_ctrl *pwrctrl, enum dvfs_kicker kicker,
 {
 	int r;
 	bool in_autok = false;
+	struct dvfs_opp *opp = &vcorefs_opptb[index];
 
-	vcorefs_crit("%u kick: lock = %u, index = %u, curr_index = %u (%u)\n",
-		     kicker, pwrctrl->sdio_lock, index, curr_opp_index, prev_opp_index);
-
-	if (index == curr_opp_index && curr_opp_index == prev_opp_index)
+	if (curr_opp_index == index && curr_opp_index == prev_opp_index)
 		return 0;
+
+	vcorefs_dbgx(KICK_S, "%u kick (%u): index = %u (0x%x,%u), curr = %u (%u)(0x%x,%u)\n",
+		     kicker, pwrctrl->sdio_lock,
+		     index, opp->vcore_pdn, opp->ddr_khz,
+		     curr_opp_index, prev_opp_index, pwrctrl->curr_vcore_pdn, pwrctrl->curr_ddr_khz);
 
 	if (pwrctrl->sdio_lock) {
 		if (kicker == KR_SDIO_AUTOK ||
@@ -540,9 +600,18 @@ OUT:
 /**************************************
  * Stay-LV DVFS Function/API
  **************************************/
+/*
+ * return value:
+ *   true : init OPP should be LOW_PWR
+ *   false: init OPP should be PERF
+ */
 static bool is_fhd_segment(void)
 {
+#ifdef MMDVFS_ENABLE_DEFAULT_STEP_QUERY
+	return !mmdvfs_is_default_step_need_perf();
+#else
 	return DISP_GetScreenWidth() * DISP_GetScreenHeight() <= SCREEN_RES_FHD;
+#endif
 }
 
 static void set_init_opp_index(struct pwr_ctrl *pwrctrl)
@@ -567,6 +636,7 @@ static int late_init_to_lowpwr_opp(void)
 	set_init_opp_index(pwrctrl);
 	kick_dvfs_by_index(pwrctrl, KR_LATE_INIT, pwrctrl->kr_oppi_map[KR_LATE_INIT]);
 
+	pwrctrl->do_req_kick = 1;
 	pwrctrl->kr_req_mask = 0;	/* start to accept request */
 	mutex_unlock(&vcorefs_mutex);
 
@@ -577,14 +647,14 @@ static bool need_delay_dvfs_to_lp2(struct pwr_ctrl *pwrctrl)
 {
 	u32 delay_ms = spm_ensure_lte_pause_interval();
 
-	vcorefs_crit("delay_ms = %u\n", delay_ms);
+	vcorefs_dbgx(REQ_DLY, "delay_ms = %u\n", delay_ms);
 
 	if (delay_ms <= DVFS_DELAY_IGNORE_MS)
 		return false;
 
 	pwrctrl->dvfs_delay_ms = delay_ms;
 	atomic_inc(&kthread_nreq);
-	smp_mb();
+	smp_mb();	/* for VcoreFS kthread */
 	wake_up_process(vcorefs_ktask);
 
 	return true;
@@ -593,17 +663,31 @@ static bool need_delay_dvfs_to_lp2(struct pwr_ctrl *pwrctrl)
 static int __request_dvfs_opp(struct pwr_ctrl *pwrctrl, enum dvfs_kicker kicker, int index)
 {
 	int i, r = 0;
-	u32 old_oppi_map, oppi_map = 0;
+	u32 new_map, old_map, oppi_map = 0;
 
-	old_oppi_map = pwrctrl->kr_oppi_map[kicker];
+	new_map = (index >= 0 ? 1U << index : 0);
 
-	vcorefs_crit("%u request: mask = 0x%x, index = %d (0x%x)\n",
-		     kicker, pwrctrl->kr_req_mask, index, old_oppi_map);
+	if (pwrctrl->kr_oppi_map[kicker] != new_map) {
+		vcorefs_dbgx(REQ, "%u request (%c%u)(0x%x): index = %d (0x%x,0x%x,0x%x,0x%x), curr = %u (%u)\n",
+			     kicker,
+#ifdef MMDVFS_ENABLE_DEFAULT_STEP_QUERY
+			     '+',
+#else
+			     ' ',
+#endif
+			     is_fhd_segment(), pwrctrl->kr_req_mask, index,
+			     pwrctrl->kr_oppi_map[KR_SYSFS],
+			     pwrctrl->kr_oppi_map[KR_SCREEN_OFF],
+			     pwrctrl->kr_oppi_map[KR_MM_SCEN],
+			     pwrctrl->kr_oppi_map[KR_EMI_MON],
+			     curr_opp_index, prev_opp_index);
+	}
 
 	if (index >= 0 && (pwrctrl->kr_req_mask & (1U << kicker)))
 		return 0;
 
-	pwrctrl->kr_oppi_map[kicker] = (index >= 0 ? 1U << index : 0);
+	old_map = pwrctrl->kr_oppi_map[kicker];
+	pwrctrl->kr_oppi_map[kicker] = new_map;
 
 	for_each_request_kicker(i)
 		oppi_map |= pwrctrl->kr_oppi_map[i];
@@ -621,7 +705,7 @@ static int __request_dvfs_opp(struct pwr_ctrl *pwrctrl, enum dvfs_kicker kicker,
 
 		r = kick_dvfs_by_index(pwrctrl, kicker, i);
 		if (r < 0 && index >= 0)
-			pwrctrl->kr_oppi_map[kicker] = old_oppi_map;
+			pwrctrl->kr_oppi_map[kicker] = old_map;
 	}
 
 	return r;
@@ -642,6 +726,25 @@ int vcorefs_request_dvfs_opp(enum dvfs_kicker kicker, int index)
 	return r;
 }
 
+#ifdef MMDVFS_MMCLOCK_NOTIFICATION
+int vcorefs_request_opp_no_mm_notify(enum dvfs_kicker kicker, int index)
+{
+	int r;
+	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
+
+	if (kicker < KR_MM_SCEN || kicker >= NUM_KICKERS || index >= NUM_OPPS)
+		return -EINVAL;
+
+	mutex_lock(&vcorefs_mutex);
+	pwrctrl->mm_notify = 0;
+	r = __request_dvfs_opp(pwrctrl, kicker, index);
+	pwrctrl->mm_notify = 1;
+	mutex_unlock(&vcorefs_mutex);
+
+	return r;
+}
+#endif
+
 
 /**************************************
  * SDIO AutoK related API
@@ -651,12 +754,12 @@ int vcorefs_sdio_lock_dvfs(bool in_ot)
 	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
 
 	if (in_ot) {	/* avoid OT thread sleeping in vcorefs_mutex */
-		vcorefs_crit("sdio lock: in online-tuning\n");
+		vcorefs_dbgx(SDIO_OT, "sdio lock: in online-tuning\n");
 		return 0;
 	}
 
 	mutex_lock(&vcorefs_mutex);
-	vcorefs_crit("sdio lock: lock = %u, curr_index = %u\n",
+	vcorefs_dbgx(SDIO, "sdio lock: lock = %u, curr_index = %u\n",
 		     pwrctrl->sdio_lock, curr_opp_index);
 
 	if (!pwrctrl->sdio_lock) {
@@ -680,7 +783,7 @@ int vcorefs_sdio_set_vcore_nml(u32 vcore_uv)
 	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
 
 	mutex_lock(&vcorefs_mutex);
-	vcorefs_crit("sdio set: lock = %u, nml = 0x%x, curr_nml = 0x%x\n",
+	vcorefs_dbgx(SDIO, "sdio set: lock = %u, nml = 0x%x, curr_nml = 0x%x\n",
 		     pwrctrl->sdio_lock, vcore_nml, curr_vcore_nml);
 
 	if (!pwrctrl->sdio_lock) {
@@ -709,12 +812,12 @@ int vcorefs_sdio_unlock_dvfs(bool in_ot)
 	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
 
 	if (in_ot) {	/* avoid OT thread sleeping in vcorefs_mutex */
-		vcorefs_crit("sdio unlock: in online-tuning\n");
+		vcorefs_dbgx(SDIO_OT, "sdio unlock: in online-tuning\n");
 		return 0;
 	}
 
 	mutex_lock(&vcorefs_mutex);
-	vcorefs_crit("sdio unlock: lock = %u\n", pwrctrl->sdio_lock);
+	vcorefs_dbgx(SDIO, "sdio unlock: lock = %u\n", pwrctrl->sdio_lock);
 
 	if (pwrctrl->sdio_lock) {
 		kick_dvfs_by_index(pwrctrl, KR_SDIO_AUTOK, pwrctrl->kr_oppi_map[KR_SDIO_AUTOK]);
@@ -750,7 +853,7 @@ static void kick_dvfs_after_screen_off(struct pwr_ctrl *pwrctrl)
 
 	index = (pwrctrl->dvfs_delay_ms ? OPPI_LOW_PWR_2 : pwrctrl->soff_opp_index);
 
-	vcorefs_crit("screen_off = %u, mm_off = %u, index = %u (%u)\n",
+	vcorefs_dbgx(SOFF, "screen_off = %u, mm_off = %u, index = %u (%u)\n",
 		     pwrctrl->screen_off, pwrctrl->mm_off, index, pwrctrl->dvfs_delay_ms);
 
 	if (!is_in_screen_off(pwrctrl))
@@ -773,7 +876,7 @@ static void kick_dvfs_before_screen_on(struct pwr_ctrl *pwrctrl)
 {
 	int i, r;
 
-	vcorefs_crit("screen_off - %u, mm_off - %u\n",
+	vcorefs_dbgx(SOFF, "screen_off - %u, mm_off - %u\n",
 		     pwrctrl->screen_off, pwrctrl->mm_off);
 
 	if (!is_in_screen_off(pwrctrl))
@@ -833,7 +936,7 @@ void vcorefs_clkmgr_notify_mm_off(void)
 
 	pwrctrl->mm_off = 1;
 	atomic_inc(&kthread_nreq);
-	smp_mb();
+	smp_mb();	/* for VcoreFS kthread */
 	wake_up_process(vcorefs_ktask);
 }
 
@@ -843,7 +946,7 @@ void vcorefs_clkmgr_notify_mm_on(void)
 	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
 
 	pwrctrl->mm_off = 0;
-	smp_mb();
+	smp_mb();	/* for VcoreFS kthread */
 }
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -888,6 +991,7 @@ static ssize_t pwr_ctrl_show(struct kobject *kobj, struct kobj_attribute *attr,
 	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
 
 	p += sprintf(p, "feature_en = %u\n"      , feature_en);
+	p += sprintf(p, "dbgx_log_en = 0x%x\n"   , dbgx_log_en);
 	p += sprintf(p, "vcore_dvs = %u\n"       , pwrctrl->vcore_dvs);
 	p += sprintf(p, "ddr_dfs = %u\n"         , pwrctrl->ddr_dfs);
 	p += sprintf(p, "axi_dfs = %u\n"         , pwrctrl->axi_dfs);
@@ -917,6 +1021,9 @@ static ssize_t pwr_ctrl_show(struct kobject *kobj, struct kobj_attribute *attr,
 	p += sprintf(p, "curr_vcore_pdn = 0x%x\n", pwrctrl->curr_vcore_pdn);
 	p += sprintf(p, "curr_vcore_nml = 0x%x\n", curr_vcore_nml);
 
+#ifdef MMDVFS_MMCLOCK_NOTIFICATION
+	p += sprintf(p, "mm_notify = %u\n"       , pwrctrl->mm_notify);
+#endif
 	p += sprintf(p, "curr_ddr_khz = %u\n"    , pwrctrl->curr_ddr_khz);
 	p += sprintf(p, "curr_axi_khz = %u\n"    , pwrctrl->curr_axi_khz);
 	p += sprintf(p, "curr_mm_khz = %u\n"     , pwrctrl->curr_mm_khz);
@@ -930,6 +1037,7 @@ static ssize_t pwr_ctrl_show(struct kobject *kobj, struct kobj_attribute *attr,
 static ssize_t pwr_ctrl_store(struct kobject *kobj, struct kobj_attribute *attr,
 			      const char *buf, size_t count)
 {
+	int r;
 	u32 val;
 	char cmd[32];
 	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
@@ -941,16 +1049,18 @@ static ssize_t pwr_ctrl_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	if (!strcmp(cmd, "feature_en")) {
 		mutex_lock(&vcorefs_mutex);
-		if (!feature_en && val && can_dvfs_with_boot_fddr()) {
+		if (val && can_dvfs_with_boot_fddr() && !feature_en) {
 			feature_en = 1;
 			set_init_opp_index(pwrctrl);
-		} else if (feature_en && !val) {
-			int r = kick_dvfs_by_index(pwrctrl, KR_SYSFS, OPPI_PERF);
+		} else if (!val && feature_en) {
+			r = kick_dvfs_by_index(pwrctrl, KR_SYSFS, OPPI_PERF);
 			BUG_ON(r);
 			feature_en = 0;
 			set_init_opp_index(pwrctrl);
 		}
 		mutex_unlock(&vcorefs_mutex);
+	} else if (!strcmp(cmd, "dbgx_log_en")) {
+		dbgx_log_en = val;
 	} else if (!strcmp(cmd, "vcore_dvs")) {
 		pwrctrl->vcore_dvs = val;
 	} else if (!strcmp(cmd, "ddr_dfs")) {
@@ -1072,7 +1182,7 @@ static ssize_t vcore_debug_show(struct kobject *kobj, struct kobj_attribute *att
 static ssize_t vcore_debug_store(struct kobject *kobj, struct kobj_attribute *attr,
 				 const char *buf, size_t count)
 {
-	int val;
+	int val, r;
 	char cmd[32];
 	struct pwr_ctrl *pwrctrl = &vcorefs_ctrl;
 
@@ -1083,8 +1193,8 @@ static ssize_t vcore_debug_store(struct kobject *kobj, struct kobj_attribute *at
 
 	if (!strcmp(cmd, "opp_vcore_set") && val < NUM_OPPS) {
 		mutex_lock(&vcorefs_mutex);
-		if (feature_en && (val != OPPI_LOW_PWR_2 || is_in_screen_off(pwrctrl))) {
-			int r = __request_dvfs_opp(pwrctrl, KR_SYSFS, val);
+		if ((val != OPPI_LOW_PWR_2 || is_in_screen_off(pwrctrl)) && feature_en) {
+			r = __request_dvfs_opp(pwrctrl, KR_SYSFS, val);
 			BUG_ON(r);
 		}
 		mutex_unlock(&vcorefs_mutex);
@@ -1216,4 +1326,4 @@ static int __init vcorefs_module_init(void)
 module_init(vcorefs_module_init);
 late_initcall_sync(late_init_to_lowpwr_opp);
 
-MODULE_DESCRIPTION("Vcore DVFS Driver v0.5");
+MODULE_DESCRIPTION("Vcore DVFS Driver v1.0");

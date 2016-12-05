@@ -1,6 +1,5 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/xlog.h>
 #include <linux/types.h>
 #include <linux/kobject.h>
 #include <linux/proc_fs.h>
@@ -24,12 +23,12 @@
 #define cl_type_lower               "cl-amdtxctrl-l"
 
 #define mtk_cooler_amdtxctrl_dprintk_always(fmt, args...) \
-  do { xlog_printk(ANDROID_LOG_INFO, "thermal/cooler/amdtxctrl", fmt, ##args); } while(0)
+  do { pr_notice("thermal/cooler/amdtxctrl" fmt, ##args); } while(0)
 
 #define mtk_cooler_amdtxctrl_dprintk(fmt, args...) \
   do { \
     if (1 == cl_amdtxctrl_klog_on) { \
-      xlog_printk(ANDROID_LOG_INFO, "thermal/cooler/amdtxctrl", fmt, ##args); \
+      pr_notice("thermal/cooler/amdtxctrl" fmt, ##args); \
     } \
   } while(0)
 

@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/vmalloc.h>
 #include <linux/spinlock.h>
+#include <linux/stacktrace.h>
 #include <asm/pgtable.h>
 #include <asm-generic/percpu.h>
 #include <asm-generic/sections.h>
@@ -148,25 +149,29 @@ static int fill_psinfo(struct elf_prpsinfo *psinfo)
 	return 0;
 }
 
-void mrdump_mini_add_misc(unsigned long addr, unsigned long size, unsigned long start, char *name)
+void mrdump_mini_add_misc_pa(unsigned long va, unsigned long pa,  unsigned long size, unsigned long start, char *name)
 {
 	int i;
 	struct elf_note *note;
-	if (!virt_addr_valid((void *)addr))
-		return;
 	for (i = 0; i < MRDUMP_MINI_NR_MISC; i++) {
 		note = &mrdump_mini_ehdr->misc[i].note;
 		if (note->n_type == NT_IPANIC_MISC) {
 			if (strncmp(mrdump_mini_ehdr->misc[i].name, name, 16) != 0)
 				continue;
 		}
-		mrdump_mini_ehdr->misc[i].data.vaddr = addr;
-		mrdump_mini_ehdr->misc[i].data.paddr = __pa(addr);
+		mrdump_mini_ehdr->misc[i].data.vaddr = va;
+		mrdump_mini_ehdr->misc[i].data.paddr = pa;
 		mrdump_mini_ehdr->misc[i].data.size = size;
 		mrdump_mini_ehdr->misc[i].data.start = virt_addr_valid((void *)start) ? __pa(start) : 0;
 		fill_note_L(note, name, NT_IPANIC_MISC, sizeof(struct mrdump_mini_elf_misc));
 		break;
 	}
+}
+void mrdump_mini_add_misc(unsigned long addr, unsigned long size, unsigned long start, char *name)
+{
+	if (!virt_addr_valid((void *)addr))
+		return;
+	mrdump_mini_add_misc_pa(addr, __pa(addr), size, start, name);
 }
 
 int kernel_addr_valid(unsigned long addr)
@@ -306,10 +311,13 @@ static void mrdump_mini_add_tsk_ti(int cpu, struct pt_regs *regs, int stack)
 	}
 }
 
+int mrdump_mini_init(void);
 static int mrdump_mini_cpu_regs(int cpu, struct pt_regs *regs, int main)
 {
 	char name[8];
 	int id;
+	if (mrdump_mini_ehdr == NULL)
+		mrdump_mini_init();
 	if (cpu >= NR_CPUS || mrdump_mini_ehdr == NULL)
 		return -1;
 	id = main ? 0 : cpu + 1;
@@ -374,6 +382,83 @@ static inline void ipanic_save_regs(struct pt_regs *regs)
 #endif
 }
 
+void mrdump_mini_build_task_info(struct pt_regs *regs)
+{
+#define MAX_STACK_TRACE_DEPTH 32
+	unsigned long ipanic_stack_entries[MAX_STACK_TRACE_DEPTH];
+	char symbol[128];
+	int sz;
+	int off, plen;
+	struct stack_trace trace;
+	int i;
+	struct task_struct *tsk, *cur;
+	struct aee_process_info *cur_proc;
+
+	if (!virt_addr_valid(current_thread_info()))
+		return;
+	cur = current_thread_info()->task;
+	tsk = cur;
+	if (!virt_addr_valid(tsk))
+		return;
+	cur_proc = (struct aee_process_info *)((void*)mrdump_mini_ehdr + MRDUMP_MINI_HEADER_SIZE);
+	
+	/* Current panic user tasks */
+	sz = 0;
+	while (tsk && (tsk->pid != 0) && (tsk->pid != 1)) {
+		/* FIXME: Check overflow ? */
+		sz += snprintf(symbol + sz, 128 - sz, "[%s, %d]", tsk->comm, tsk->pid);
+		tsk = tsk->real_parent;
+	}
+	if (strncmp(cur_proc->process_path, symbol, sz) == 0)
+		return;
+	
+	memset(cur_proc, 0, sizeof(struct aee_process_info));
+	memcpy(cur_proc->process_path, symbol, sz);
+
+	/* Grab kernel task stack trace */
+	trace.nr_entries = 0;
+	trace.max_entries = MAX_STACK_TRACE_DEPTH;
+	trace.entries = ipanic_stack_entries;
+	trace.skip = 8;
+	save_stack_trace_tsk(cur, &trace);
+	/* Skip the entries -  ipanic_save_current_tsk_info/save_stack_trace_tsk */
+	for (i = 0; i < trace.nr_entries; i++) {
+		off = strlen(cur_proc->backtrace);
+		plen = AEE_BACKTRACE_LENGTH - ALIGN(off, 8);
+		if (plen > 16) {
+			sz = snprintf(symbol, 128, "[<%p>] %pS\n",
+				 (void *)ipanic_stack_entries[i], (void *)ipanic_stack_entries[i]);
+			if (ALIGN(sz, 8) - sz) {
+				memset(symbol + sz - 1, ' ', ALIGN(sz, 8) - sz);
+				memset(symbol + ALIGN(sz, 8) - 1, '\n', 1);
+			}
+			if (ALIGN(sz, 8) <= plen)
+				memcpy(cur_proc->backtrace + ALIGN(off, 8), symbol, ALIGN(sz, 8));
+		}
+	}
+	if (regs) {
+		cur_proc->ke_frame.pc = (__u64) regs->reg_pc;
+		cur_proc->ke_frame.lr = (__u64) regs->reg_lr;
+	} else {
+		/* in case panic() is called without die */
+		/* Todo: a UT for this */
+		cur_proc->ke_frame.pc = ipanic_stack_entries[0];
+		cur_proc->ke_frame.lr = ipanic_stack_entries[1];
+	}
+	snprintf(cur_proc->ke_frame.pc_symbol, AEE_SZ_SYMBOL_S, "[<%p>] %pS",
+		 (void *)(unsigned long) cur_proc->ke_frame.pc, (void *)(unsigned long) cur_proc->ke_frame.pc);
+	snprintf(cur_proc->ke_frame.lr_symbol, AEE_SZ_SYMBOL_L, "[<%p>] %pS",
+		 (void *)(unsigned long) cur_proc->ke_frame.lr, (void *)(unsigned long) cur_proc->ke_frame.lr);
+}
+
+int mrdump_task_info(unsigned char *buffer, size_t sz_buf)
+{
+	if (sz_buf < sizeof(struct aee_process_info))
+		return -1;
+	memcpy(buffer, (void*)mrdump_mini_ehdr + MRDUMP_MINI_HEADER_SIZE, sizeof(struct aee_process_info));
+	return sizeof(struct aee_process_info);
+}
+
 static void mrdump_mini_add_loads(void);
 void mrdump_mini_ke_cpu_regs(struct pt_regs *regs)
 {
@@ -386,6 +471,7 @@ void mrdump_mini_ke_cpu_regs(struct pt_regs *regs)
 	cpu = get_HW_cpuid();
 	mrdump_mini_cpu_regs(cpu, regs, 1);
 	mrdump_mini_add_loads();
+	mrdump_mini_build_task_info(regs);
 }
 EXPORT_SYMBOL(mrdump_mini_ke_cpu_regs);
 
@@ -394,6 +480,9 @@ static void mrdump_mini_build_elf_misc(void)
 	int i;
 	struct mrdump_mini_elf_misc misc;
 	char log_type[][16] = {"_MAIN_LOG_", "_EVENTS_LOG_", "_RADIO_LOG_", "_SYSTEM_LOG_"};
+	unsigned long task_info_va = (unsigned long)((void*)mrdump_mini_ehdr + MRDUMP_MINI_HEADER_SIZE);
+	unsigned long task_info_pa = MRDUMP_MINI_BUF_PADDR ? (MRDUMP_MINI_BUF_PADDR + MRDUMP_MINI_HEADER_SIZE) : __pa(task_info_va);
+	mrdump_mini_add_misc_pa(task_info_va, task_info_pa, sizeof(struct aee_process_info), 0, "PROC_CUR_TSK");
 	memset(&misc, 0, sizeof(struct mrdump_mini_elf_misc));
 	get_kernel_log_buffer(&misc.vaddr, &misc.size, &misc.start);
 	mrdump_mini_add_misc(misc.vaddr, misc.size, misc.start, "_KERNEL_LOG_");
@@ -534,10 +623,12 @@ static void __init *remap_lowmem(phys_addr_t start, phys_addr_t size)
 	return vaddr + offset_in_page(start);
 }
 
+#define TASK_INFO_SIZE PAGE_SIZE
+#define PSTORE_SIZE 0x8000
 static void __init mrdump_mini_elf_header_init(void)
 {
 	if (MRDUMP_MINI_BUF_PADDR)
-		mrdump_mini_ehdr = remap_lowmem(MRDUMP_MINI_BUF_PADDR, MRDUMP_MINI_HEADER_SIZE);
+		mrdump_mini_ehdr = remap_lowmem(MRDUMP_MINI_BUF_PADDR, MRDUMP_MINI_HEADER_SIZE + TASK_INFO_SIZE + PSTORE_SIZE);
 	else
 		mrdump_mini_ehdr = (struct mrdump_mini_elf_header *)kmalloc(MRDUMP_MINI_HEADER_SIZE, GFP_KERNEL);
 	if (mrdump_mini_ehdr == NULL) {
@@ -549,7 +640,7 @@ static void __init mrdump_mini_elf_header_init(void)
 	fill_elf_header(&mrdump_mini_ehdr->ehdr, MRDUMP_MINI_NR_SECTION);
 }
 
-int __init mrdump_mini_init(void)
+int mrdump_mini_init(void)
 {
 	int i;
 	unsigned long size, offset;
@@ -583,7 +674,7 @@ module_init(mrdump_mini_init);
 void mrdump_mini_reserve_memory(void)
 {
 	if(MRDUMP_MINI_BUF_PADDR)
-		memblock_reserve(MRDUMP_MINI_BUF_PADDR, MRDUMP_MINI_HEADER_SIZE + 0xd000);
+		memblock_reserve(MRDUMP_MINI_BUF_PADDR, MRDUMP_MINI_HEADER_SIZE + TASK_INFO_SIZE + PSTORE_SIZE);
 }
 
 module_param(dump_all_cpus, bool, S_IRUGO | S_IWUSR);

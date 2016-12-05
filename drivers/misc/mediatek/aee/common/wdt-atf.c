@@ -6,7 +6,6 @@
 #include <linux/list.h>
 #include <linux/init.h>
 #include <linux/smp.h>
-#include <linux/mt_sched_mon.h>
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/hardirq.h>
@@ -27,6 +26,7 @@
 #endif
 #include "aee-common.h"
 #include <mach/mt_secure_api.h>
+#include "mt_sched_mon.h"
 
 
 #define THREAD_INFO(sp) ((struct thread_info *) \
@@ -386,6 +386,7 @@ void aee_wdt_irq_info(void)
 	BUG();
 }
 
+void aee_rr_rec_exp_type(unsigned int type);
 void aee_wdt_atf_info(unsigned int cpu, struct pt_regs *regs)
 {
 	unsigned long long t;
@@ -459,13 +460,15 @@ void aee_wdt_atf_info(unsigned int cpu, struct pt_regs *regs)
 	/* avoid lock prove to dump_stack in __debug_locks_off() */
 	xchg(&debug_locks, 0);
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_WDT_IRQ_DONE);
-
+	aee_rr_rec_exp_type(1);
 	BUG();
 }
 
 void notrace aee_wdt_atf_entry(void)
 {
+#ifdef CONFIG_ARM64
 	int i;
+#endif	
 	void *regs;
 	struct pt_regs pregs;
 	int cpu = get_HW_cpuid();

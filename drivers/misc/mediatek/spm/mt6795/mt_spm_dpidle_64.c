@@ -50,6 +50,15 @@
 #define SPM_AEE_RR_REC 0
 #endif
 
+#define DPIDLE_TAG     "[DP] "
+#define dpidle_dbg(fmt, args...)	pr_debug(DPIDLE_TAG fmt, ##args)
+
+#define	DPIDLE_LOG_PRINT_TIMEOUT_CRITERIA	20
+#define	DPIDLE_LOG_DISCARD_CRITERIA			5000	/* ms */
+
+static unsigned int dpidle_log_discard_cnt;
+static unsigned int dpidle_log_print_prev_time;
+
 #if SPM_AEE_RR_REC
 enum spm_deepidle_step
 {
@@ -68,12 +77,12 @@ enum spm_deepidle_step
 static const u32 dpidle_binary[] = {
 	0x80328400, 0x81419801, 0xd80001c5, 0x17c07c1f, 0x1a00001f, 0x10006604,
 	0xe2200004, 0xc0c030e0, 0x17c07c1f, 0xe2200006, 0xc0c030e0, 0x17c07c1f,
-	0x1b80001f, 0x20000208, 0xe8208000, 0x10006354, 0xfffe7fff, 0xc2803000,
+	0x1b80001f, 0x20000208, 0xe8208000, 0x10006354, 0xfffe7fbf, 0xc2803000,
 	0x1290041f, 0x8880000c, 0x2f7be75f, 0xd8200362, 0x17c07c1f, 0x1b00001f,
 	0x7fffe7ff, 0xd00003a0, 0x17c07c1f, 0x1b00001f, 0x7ffff7ff, 0xf0000000,
 	0x17c07c1f, 0x80880001, 0xd8000482, 0x17c07c1f, 0xd00021a0, 0x1200041f,
 	0x18c0001f, 0x10006608, 0x1910001f, 0x10006608, 0x813b0404, 0xe0c00004,
-	0xe8208000, 0x10006354, 0xffffffff, 0x81419801, 0xd8000745, 0x17c07c1f,
+	0xe8208000, 0x10006354, 0xffffffbf, 0x81419801, 0xd8000745, 0x17c07c1f,
 	0x1a00001f, 0x10006604, 0xe2200005, 0xc0c030e0, 0x17c07c1f, 0xe2200007,
 	0xc0c030e0, 0x17c07c1f, 0x1b80001f, 0x2000008c, 0xc2803000, 0x1290841f,
 	0xa0128400, 0x1b00001f, 0x3fffefff, 0xf0000000, 0x17c07c1f, 0x808f9801,
@@ -98,7 +107,7 @@ static const u32 dpidle_binary[] = {
 	0xe0c00004, 0x1b80001f, 0x2000000a, 0x813c8404, 0xe0c00004, 0x18c0001f,
 	0x100110f4, 0x1910001f, 0x100110f4, 0xa11c8404, 0xe0c00004, 0x1b80001f,
 	0x2000000a, 0x813c8404, 0xe0c00004, 0x1b80001f, 0x20000100, 0x81fa0407,
-	0x81f18407, 0x81f08407, 0xe8208000, 0x10006354, 0xfffe7b47, 0xa1d80407,
+	0x81f18407, 0x81f08407, 0xe8208000, 0x10006354, 0xfffe7b07, 0xa1d80407,
 	0xa1dc0407, 0x18c0001f, 0x10006608, 0x1910001f, 0x10006608, 0xa11b0404,
 	0xe0c00004, 0xc2803000, 0x1291041f, 0x8880000c, 0x2f7be75f, 0xd8201ae2,
 	0x17c07c1f, 0x1b00001f, 0x3fffe7ff, 0xd0001b20, 0x17c07c1f, 0x1b00001f,
@@ -153,7 +162,7 @@ static const u32 dpidle_binary[] = {
 	0x17c07c1f, 0x17c07c1f, 0x17c07c1f, 0x17c07c1f, 0x17c07c1f, 0x17c07c1f,
 	0x17c07c1f, 0x17c07c1f, 0x1840001f, 0x00000001, 0xa1d48407, 0x1990001f,
 	0x10006b08, 0xe8208000, 0x10006b6c, 0x00000000, 0x1b00001f, 0x2f7be75f,
-	0x1b80001f, 0x500f0000, 0xe8208000, 0x10006354, 0xfffe7b47, 0xc0c06b80,
+	0x1b80001f, 0x500f0000, 0xe8208000, 0x10006354, 0xfffe7b07, 0xc0c06b80,
 	0x81401801, 0xd8004625, 0x17c07c1f, 0x81f60407, 0x18c0001f, 0x10006200,
 	0xc0c06380, 0x12807c1f, 0xe8208000, 0x1000625c, 0x00000001, 0x1b80001f,
 	0x20000080, 0xc0c06380, 0x1280041f, 0x18c0001f, 0x10006208, 0xc0c06380,
@@ -212,8 +221,9 @@ static const u32 dpidle_binary[] = {
 	0xf0000000, 0x17c07c1f, 0xa1d10407, 0x1b80001f, 0x20000020, 0xf0000000,
 	0x17c07c1f
 };
+
 static struct pcm_desc dpidle_pcm = {
-	.version	= "pcm_deepidle_v8.6_20141208",
+	.version	= "pcm_deepidle_v8.7_20150326",
 	.base		= dpidle_binary,
 	.size		= 865,
 	.sess		= 2,
@@ -282,6 +292,14 @@ extern void aee_rr_rec_deepidle_val(u32 val);
 extern u32 aee_rr_curr_deepidle_val(void);
 #endif
 
+static long int idle_get_current_time_ms(void)
+{
+	struct timeval t;
+
+	do_gettimeofday(&t);
+	return ((t.tv_sec & 0xFFF) * 1000000 + t.tv_usec) / 1000;
+}
+
 static void spm_trigger_wfi_for_dpidle(struct pwr_ctrl *pwrctrl)
 {
     //sync_hw_gating_value();     /* for Vcore DVFS */
@@ -328,6 +346,52 @@ int spm_set_dpidle_wakesrc(u32 wakesrc, bool enable, bool replace)
     spin_unlock_irqrestore(&__spm_lock, flags);
 
     return 0;
+}
+
+static wake_reason_t spm_output_wake_reason(struct wake_status *wakesta, struct pcm_desc *pcmdesc, u32 dump_log)
+{
+	wake_reason_t wr = WR_NONE;
+	unsigned long int dpidle_log_print_curr_time = 0;
+	bool log_print = false;
+	static bool timer_out_too_short;
+
+	if (dump_log == 0) {
+		wr = __spm_output_wake_reason(wakesta, pcmdesc, false);
+	} else if (dump_log == 1) {
+		/* Determine print SPM log or not */
+		dpidle_log_print_curr_time = idle_get_current_time_ms();
+
+		if (wakesta->assert_pc != 0)
+			log_print = true;
+		else if ((wakesta->r12 & (0x1 << 4)) == 0) /* Not wakeup by GPT */
+			log_print = true;
+		else if (wakesta->timer_out <= DPIDLE_LOG_PRINT_TIMEOUT_CRITERIA)
+			log_print = true;
+		else if ((dpidle_log_print_curr_time - dpidle_log_print_prev_time) >
+			 DPIDLE_LOG_DISCARD_CRITERIA)
+			log_print = true;
+
+		if (wakesta->timer_out <= DPIDLE_LOG_PRINT_TIMEOUT_CRITERIA)
+			timer_out_too_short = true;
+
+		/* Print SPM log */
+		if (log_print == true) {
+			dpidle_dbg("dpidle_log_discard_cnt = %d, timer_out_too_short = %d\n",
+						dpidle_log_discard_cnt,
+						timer_out_too_short);
+			wr = __spm_output_wake_reason(wakesta, pcmdesc, false);
+
+			dpidle_log_print_prev_time = dpidle_log_print_curr_time;
+			dpidle_log_discard_cnt = 0;
+			timer_out_too_short = false;
+		} else {
+			dpidle_log_discard_cnt++;
+
+			wr = WR_NONE;
+		}
+	}
+
+	return wr;
 }
 
 wake_reason_t spm_go_to_dpidle(u32 spm_flags, u32 spm_data)
@@ -407,7 +471,7 @@ wake_reason_t spm_go_to_dpidle(u32 spm_flags, u32 spm_data)
 #endif 
     request_uart_to_wakeup();
 
-    wr = __spm_output_wake_reason(&wakesta, pcmdesc, false);
+	wr = spm_output_wake_reason(&wakesta, pcmdesc, spm_data);
 
 RESTORE_IRQ:
     mt_cirq_flush();

@@ -58,6 +58,7 @@
 #include "mt_soc_afe_control.h"
 #include "mt_soc_codec_63xx.h"
 #include "mt_soc_pcm_common.h"
+#include <auddrv_underflow_mach.h>
 
 #include <mach/upmu_common.h>
 #include <mach/upmu_sw.h>
@@ -324,9 +325,14 @@ static int AudioDebug_Setting_Set(struct snd_kcontrol *kcontrol, struct snd_ctl_
     EnableSideGenHw(Soc_Aud_InterConnectionOutput_O03, Soc_Aud_MemIF_Direction_DIRECTION_OUTPUT, true);
     msleep(5 * 1000);
     EnableSideGenHw(Soc_Aud_InterConnectionOutput_O03, Soc_Aud_MemIF_Direction_DIRECTION_OUTPUT, false);
+    EnableSideGenHw(Soc_Aud_InterConnectionInput_I03, Soc_Aud_MemIF_Direction_DIRECTION_INPUT, true);
+    msleep(5 * 1000);
+    EnableSideGenHw(Soc_Aud_InterConnectionInput_I03, Soc_Aud_MemIF_Direction_DIRECTION_INPUT, false);
 
     Ana_Log_Print();
     Afe_Log_Print();
+
+    Auddrv_Enable_dump(true);
 
     return 0;
 }
@@ -467,26 +473,6 @@ static int Audio_Mode_Set(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
     return 0;
 }
 
-static int Audio_Irqcnt1_Get(struct snd_kcontrol *kcontrol,
-                             struct snd_ctl_elem_value *ucontrol)
-{
-    printk("Audio_Irqcnt1_Get \n");
-    AudDrv_Clk_On();
-    ucontrol->value.integer.value[0] =   Afe_Get_Reg(AFE_IRQ_MCU_CNT1);
-    AudDrv_Clk_Off();
-    return 0;
-}
-
-static int Audio_Irqcnt1_Set(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
-{
-    uint32 irq1_cnt =  ucontrol->value.integer.value[0];
-    printk("%s()\n", __func__);
-    AudDrv_Clk_On();
-    Afe_Set_Reg(AFE_IRQ_MCU_CNT1, irq1_cnt, 0xffffffff);
-    AudDrv_Clk_Off();
-    return 0;
-}
-
 static int Audio_Irqcnt2_Get(struct snd_kcontrol *kcontrol,
                              struct snd_ctl_elem_value *ucontrol)
 {
@@ -502,7 +488,8 @@ static int Audio_Irqcnt2_Set(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
     uint32 irq1_cnt =  ucontrol->value.integer.value[0];
     printk("%s()\n", __func__);
     AudDrv_Clk_On();
-    Afe_Set_Reg(AFE_IRQ_MCU_CNT2, irq1_cnt, 0xffffffff);
+	/* Afe_Set_Reg(AFE_IRQ_MCU_CNT2, irq1_cnt, 0xffffffff); */
+	SetIrqMcuCounter(Soc_Aud_IRQ_MCU_MODE_IRQ2_MCU_MODE, irq1_cnt);
     AudDrv_Clk_Off();
     return 0;
 }
@@ -709,7 +696,6 @@ static const struct snd_kcontrol_new Audio_snd_routing_controls[] =
     SOC_ENUM_EXT("Audio_SideGen_Amplitude", Audio_Routing_Enum[2], Audio_SideGen_Amplitude_Get, Audio_SideGen_Amplitude_Set),
     SOC_ENUM_EXT("Audio_Sidetone_Switch", Audio_Routing_Enum[3], Audio_SideTone_Get, Audio_SideTone_Set),
     SOC_ENUM_EXT("Audio_Mode_Switch", Audio_Routing_Enum[4], Audio_Mode_Get, Audio_Mode_Set),
-    SOC_SINGLE_EXT("Audio IRQ1 CNT", SND_SOC_NOPM, 0, 65536, 0, Audio_Irqcnt1_Get, Audio_Irqcnt1_Set),
     SOC_SINGLE_EXT("Audio IRQ2 CNT", SND_SOC_NOPM, 0, 65536, 0, Audio_Irqcnt2_Get, Audio_Irqcnt2_Set),
     SOC_SINGLE_EXT("Audio HPL Offset", SND_SOC_NOPM, 0 , 0x20000, 0, Audio_Hpl_Offset_Get, Audio_Hpl_Offset_Set),
     SOC_SINGLE_EXT("Audio HPR Offset", SND_SOC_NOPM, 0, 0x20000, 0, Audio_Hpr_Offset_Get, Audio_Hpr_Offset_Set),

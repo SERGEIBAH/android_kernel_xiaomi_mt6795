@@ -2,6 +2,7 @@
 #define _MT_VCORE_DVFS_
 
 #include <linux/kernel.h>
+#include <mach/mt_smi.h>
 
 /**************************************
  * Config and Parameter
@@ -73,6 +74,9 @@ enum dvfs_kicker {
 
 /* for MM and EMI_Mon */
 extern int vcorefs_request_dvfs_opp(enum dvfs_kicker kicker, int index);
+#ifdef MMDVFS_MMCLOCK_NOTIFICATION
+extern int vcorefs_request_opp_no_mm_notify(enum dvfs_kicker kicker, int index);
+#endif
 
 /* for SDIO */
 extern int vcorefs_sdio_lock_dvfs(bool in_ot);

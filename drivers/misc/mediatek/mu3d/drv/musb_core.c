@@ -100,6 +100,10 @@
 #include <linux/platform_device.h>
 #include <linux/io.h>
 
+#ifdef CONFIG_MTK_USB2JTAG_SUPPORT
+#include <mach/mt_usb2jtag.h>
+#endif
+
 #ifdef CONFIG_USBIF_COMPLIANCE
 #include <linux/proc_fs.h>
 #include <asm/uaccess.h>
@@ -871,6 +875,7 @@ static void ep_prof_work(struct work_struct *data)
 
 static void musb_restore_context(struct musb *musb);
 static void musb_save_context(struct musb *musb);
+extern void usb20_pll_settings(bool host, bool forceOn);
 
 /*-------------------------------------------------------------------------*/
 /*
@@ -896,6 +901,10 @@ void musb_start(struct musb *musb)
 
 		/* disable IP reset and power down, disable U2/U3 ip power down */
 		_ex_mu3d_hal_ssusb_en();
+		/* USB PLL Force settings */
+#ifdef CONFIG_PROJECT_PHY
+		usb20_pll_settings(false, false);
+#endif
 
 		/* reset U3D all dev module. */
 		mu3d_hal_rst_dev();
@@ -924,16 +933,16 @@ void musb_start(struct musb *musb)
 	/* USB2.0 controller will negotiate for HS mode when the device is reset by the host */
 	os_writel(U3D_POWER_MANAGEMENT, (os_readl(U3D_POWER_MANAGEMENT) | HS_ENABLE));
 
+	/* set LPM remote wake up enable by HW */
+	os_writel(U3D_POWER_MANAGEMENT, (os_readl(U3D_POWER_MANAGEMENT) |  LPM_HRWE));
+	os_writel(U3D_USB2_EPCTL_LPM, (L1_EXIT_EP0_CHK | L1_EXIT_EP_IN_CHK | L1_EXIT_EP_OUT_CHK));
+	os_writel(U3D_USB2_EPCTL_LPM_FC_CHK, (L1_EXIT_EP0_FC_CHK | L1_EXIT_EP_IN_FC_CHK | L1_EXIT_EP_OUT_FC_CHK));
+
 #ifdef CONFIG_USBIF_COMPLIANCE
 	/* Accept LGO_U1/U2 at begining*/
 	os_writel(U3D_LINK_POWER_CONTROL, os_readl(U3D_LINK_POWER_CONTROL) | SW_U1_ACCEPT_ENABLE | SW_U2_ACCEPT_ENABLE);
 
 	os_writel(U3D_LINK_HP_TIMER, (os_readl(U3D_LINK_HP_TIMER) & ~(PHP_TIMEOUT_VALUE)) | 0x6); // 3us timeout for PENDING HP
-
-	/* set LPM remote wake up enable by HW */
-	os_writel(U3D_POWER_MANAGEMENT, (os_readl(U3D_POWER_MANAGEMENT) |  LPM_HRWE));
-	os_writel(U3D_USB2_EPCTL_LPM, (L1_EXIT_EP0_CHK | L1_EXIT_EP_IN_CHK | L1_EXIT_EP_OUT_CHK));
-	os_writel(U3D_USB2_EPCTL_LPM_FC_CHK, (L1_EXIT_EP0_FC_CHK | L1_EXIT_EP_IN_FC_CHK | L1_EXIT_EP_OUT_FC_CHK));
 
 	/* set vbus force enable */
 	os_setmsk(U3D_MISC_CTRL, (VBUS_FRC_EN|VBUS_ON));
@@ -2053,7 +2062,7 @@ static void musb_irq_work(struct work_struct *data)
 	struct musb *musb = container_of(data, struct musb, irq_work);
 	static int old_state;
 
-	os_printk(K_INFO, "%s [%d]=[%d]\n", __func__, musb->xceiv->state, old_state);
+	os_printk(K_DEBUG, "%s [%d]=[%d]\n", __func__, musb->xceiv->state, old_state);
 
 	if (musb->xceiv->state != old_state) {
 		old_state = musb->xceiv->state;
@@ -2976,6 +2985,12 @@ static int __init musb_init(void)
 	struct proc_dir_entry *prEntry;
 	int ret = 0;
 
+#ifdef CONFIG_MTK_USB2JTAG_SUPPORT
+	if (usb2jtag_mode()) {
+		pr_err("[USB2JTAG] in usb2jtag mode, not to initialize usb driver\n");
+		return 0;
+	}
+#endif
 	if (usb_disabled())
 		return 0;
 
@@ -2999,6 +3014,7 @@ static int __init musb_init(void)
 
 	return ret ;
 }
+
 module_init(musb_init);
 
 static void __exit musb_cleanup(void)
@@ -3014,6 +3030,12 @@ module_exit(musb_cleanup);
 
 static int __init musb_init(void)
 {
+#ifdef CONFIG_MTK_USB2JTAG_SUPPORT
+	if (usb2jtag_mode()) {
+		pr_err("[USB2JTAG] in usb2jtag mode, not to initialize usb driver\n");
+		return 0;
+	}
+#endif
 	if (usb_disabled())
 		return 0;
 

@@ -6,7 +6,6 @@
 #include <linux/thermal.h>
 #include <linux/platform_device.h>
 #include <linux/aee.h>
-#include <linux/xlog.h>
 #include <linux/types.h>
 #include <linux/delay.h>
 #include <linux/proc_fs.h>
@@ -26,16 +25,20 @@ extern struct proc_dir_entry * mtk_thermal_get_proc_drv_therm_dir_entry(void);
 static unsigned int interval = 1000; /* mseconds, 0 : no auto polling */
 static int trip_temp[10] = {120000,110000,100000,90000,80000,70000,65000,60000,55000,50000};
 
+/* not in use
 static unsigned int cl_dev_sysrst_state = 0;
+ */
 static struct thermal_zone_device *thz_dev1;
 static struct thermal_zone_device *thz_dev2;
 static struct thermal_zone_device *thz_dev3;
 static struct thermal_zone_device *thz_dev4;
 
+/* not in use
 static struct thermal_cooling_device *cl_dev_sysrst1;
 static struct thermal_cooling_device *cl_dev_sysrst2;
 static struct thermal_cooling_device *cl_dev_sysrst3;
 static struct thermal_cooling_device *cl_dev_sysrst4;
+ */
 
 static int tsallts_debug_log = 0;
 static int kernelmode = 0;
@@ -58,7 +61,7 @@ static char g_bind9[20]={0};
 #define tsallts_dprintk(fmt, args...)   \
 do {                                    \
     if (tsallts_debug_log) {                \
-        xlog_printk(ANDROID_LOG_INFO, "Power/ALLTS_Thermal", fmt, ##args); \
+        pr_notice("Power/ALLTS_Thermal" fmt, ##args); \
     }                                   \
 } while(0)
 
@@ -530,7 +533,7 @@ static struct thermal_zone_device_ops tsallts_dev_ops4 = {
 	.get_crit_temp = tsallts_get_crit_temp,
 };
 
-
+#if 0 /* not in use */
 static int tsallts_sysrst_get_max_state(struct thermal_cooling_device *cdev,
 				 unsigned long *state)
 {
@@ -585,14 +588,11 @@ static struct thermal_cooling_device_ops tsallts_cooling_sysrst_ops4 = {
 	.get_cur_state = tsallts_sysrst_get_cur_state,
 	.set_cur_state = tsallts_sysrst_set_cur_state,
 };
-
+#endif 
 
 static int tsallts_read1(struct seq_file *m, void *v)
 {
-
-
-tsallts_dprintk( "tsallts_read1\n");
-
+    tsallts_dprintk( "tsallts_read1\n");
 
 	seq_printf(m, "[ tsallts_read1] trip_0_temp=%d,trip_1_temp=%d,trip_2_temp=%d,trip_3_temp=%d,trip_4_temp=%d,\n\
 		trip_5_temp=%d,trip_6_temp=%d,trip_7_temp=%d,trip_8_temp=%d,trip_9_temp=%d,\n\
@@ -610,13 +610,9 @@ tsallts_dprintk( "tsallts_read1\n");
 	return 0;
 }
 
-
 static int tsallts_read2(struct seq_file *m, void *v)
 {
-
-
-tsallts_dprintk( "tsallts_read2\n");
-
+    tsallts_dprintk( "tsallts_read2\n");
 
 	seq_printf(m, "[ tsallts_read2] trip_0_temp=%d,trip_1_temp=%d,trip_2_temp=%d,trip_3_temp=%d,trip_4_temp=%d,\n\
 		trip_5_temp=%d,trip_6_temp=%d,trip_7_temp=%d,trip_8_temp=%d,trip_9_temp=%d,\n\
@@ -634,13 +630,9 @@ tsallts_dprintk( "tsallts_read2\n");
 	return 0;
 }
 
-
 static int tsallts_read3(struct seq_file *m, void *v)
 {
-
-
-tsallts_dprintk( "tsallts_read3\n");
-
+    tsallts_dprintk( "tsallts_read3\n");
 
 	seq_printf(m, "[ tsallts_read3] trip_0_temp=%d,trip_1_temp=%d,trip_2_temp=%d,trip_3_temp=%d,trip_4_temp=%d,\n\
 		trip_5_temp=%d,trip_6_temp=%d,trip_7_temp=%d,trip_8_temp=%d,trip_9_temp=%d,\n\
@@ -658,13 +650,9 @@ tsallts_dprintk( "tsallts_read3\n");
 	return 0;
 }
 
-
 static int tsallts_read4(struct seq_file *m, void *v)
 {
-
-
-tsallts_dprintk( "tsallts_read4\n");
-
+    tsallts_dprintk( "tsallts_read4\n");
 
 	seq_printf(m, "[ tsallts_read4] trip_0_temp=%d,trip_1_temp=%d,trip_2_temp=%d,trip_3_temp=%d,trip_4_temp=%d,\n\
 		trip_5_temp=%d,trip_6_temp=%d,trip_7_temp=%d,trip_8_temp=%d,trip_9_temp=%d,\n\
@@ -682,11 +670,10 @@ tsallts_dprintk( "tsallts_read4\n");
 	return 0;
 }
 
-
+/* Not in use
 int tsallts_register_thermal(void);
+ */
 void tsallts_unregister_thermal(void);
-
-
 
 static ssize_t tsallts_write1(struct file *file, const char __user *buffer, size_t count, loff_t *data)
 {
@@ -717,8 +704,10 @@ static ssize_t tsallts_write1(struct file *file, const char __user *buffer, size
 		&time_msec) == 32)
 	{
 		tsallts_dprintk("[tsallts_write1] tsallts_unregister_thermal\n");
-		tsallts_unregister_thermal();
-
+        if (thz_dev1) {
+            mtk_thermal_zone_device_unregister(thz_dev1);
+            thz_dev1 = NULL;
+        }
 
 		if(num_trip<0) return -EINVAL;
 
@@ -762,7 +751,10 @@ static ssize_t tsallts_write1(struct file *file, const char __user *buffer, size
 		trip_temp[5],trip_temp[6],trip_temp[7],trip_temp[8],trip_temp[9],interval);
 
 		tsallts_dprintk("[tsallts_write1] tsallts_register_thermal\n");
-		tsallts_register_thermal();
+        if (NULL == thz_dev1) {
+            thz_dev1 = mtk_thermal_zone_device_register("mtkts1", num_trip, NULL,
+                                                        &tsallts_dev_ops1, 0, 0, 0, interval);
+        }
 
 		return count;
 	}
@@ -803,7 +795,10 @@ static ssize_t tsallts_write2(struct file *file, const char __user *buffer, size
 		&time_msec) == 32)
 	{
 		tsallts_dprintk("[tsallts_write2] tsallts_unregister_thermal\n");
-		tsallts_unregister_thermal();
+        if (thz_dev2) {
+            mtk_thermal_zone_device_unregister(thz_dev2);
+            thz_dev2 = NULL;
+        }
 
 		if(num_trip<0) return -EINVAL;
 
@@ -847,7 +842,10 @@ static ssize_t tsallts_write2(struct file *file, const char __user *buffer, size
 		trip_temp[5],trip_temp[6],trip_temp[7],trip_temp[8],trip_temp[9],interval);
 
 		tsallts_dprintk("[tsallts_write2] tsallts_register_thermal\n");
-		tsallts_register_thermal();
+        if (NULL == thz_dev2) {
+            thz_dev2 = mtk_thermal_zone_device_register("mtkts2", num_trip, NULL,
+                                                        &tsallts_dev_ops2, 0, 0, 0, interval);
+        }
 
 		return count;
 	}
@@ -888,7 +886,10 @@ static ssize_t tsallts_write3(struct file *file, const char __user *buffer, size
 		&time_msec) == 32)
 	{
 		tsallts_dprintk("[tsallts_write3] tsallts_unregister_thermal\n");
-		tsallts_unregister_thermal();
+        if (thz_dev3) {
+            mtk_thermal_zone_device_unregister(thz_dev3);
+            thz_dev3 = NULL;
+        }
 
 		if(num_trip<0) return -EINVAL;
 
@@ -932,7 +933,10 @@ static ssize_t tsallts_write3(struct file *file, const char __user *buffer, size
 		trip_temp[5],trip_temp[6],trip_temp[7],trip_temp[8],trip_temp[9],interval);
 
 		tsallts_dprintk("[tsallts_write3] tsallts_register_thermal\n");
-		tsallts_register_thermal();
+		if (NULL == thz_dev3) {
+            thz_dev3 = mtk_thermal_zone_device_register("mtkts3", num_trip, NULL,
+                                                        &tsallts_dev_ops3, 0, 0, 0, interval);
+        }
 
 		return count;
 	}
@@ -973,7 +977,10 @@ static ssize_t tsallts_write4(struct file *file, const char __user *buffer, size
 		&time_msec) == 32)
 	{
 		tsallts_dprintk("[tsallts_write4] tsallts_unregister_thermal\n");
-		tsallts_unregister_thermal();
+        if (thz_dev4) {
+            mtk_thermal_zone_device_unregister(thz_dev4);
+            thz_dev4 = NULL;
+        }
 
 		if(num_trip<0) return -EINVAL;
 
@@ -1017,7 +1024,10 @@ static ssize_t tsallts_write4(struct file *file, const char __user *buffer, size
 		trip_temp[5],trip_temp[6],trip_temp[7],trip_temp[8],trip_temp[9],interval);
 
 		tsallts_dprintk("[tsallts_write4] tsallts_register_thermal\n");
-		tsallts_register_thermal();
+		if (NULL == thz_dev4) {
+            thz_dev4 = mtk_thermal_zone_device_register("mtkts4", num_trip, NULL,
+                                                        &tsallts_dev_ops4, 0, 0, 0, interval);
+        }
 
 		return count;
 	}
@@ -1029,7 +1039,7 @@ static ssize_t tsallts_write4(struct file *file, const char __user *buffer, size
 	return -EINVAL;
 }
 
-
+#if 0 /* not in use */
 int tsallts_register_cooler(void)
 {
     cl_dev_sysrst1 = mtk_thermal_cooling_device_register("mtkts1-sysrst", NULL,
@@ -1046,7 +1056,9 @@ int tsallts_register_cooler(void)
 
     return 0;
 }
+#endif
 
+#if 0 /* not in use */
 int tsallts_register_thermal(void)
 {
     tsallts_dprintk("[tsallts_register_thermal] \n");
@@ -1066,7 +1078,9 @@ int tsallts_register_thermal(void)
 
     return 0;
 }
+#endif
 
+#if 0 /* not in use */
 void tsallts_unregister_cooler(void)
 {
 	if (cl_dev_sysrst1) {
@@ -1088,6 +1102,7 @@ void tsallts_unregister_cooler(void)
 	}
 
 }
+#endif
 
 void tsallts_unregister_thermal(void)
 {
@@ -1097,7 +1112,6 @@ void tsallts_unregister_thermal(void)
 		mtk_thermal_zone_device_unregister(thz_dev1);
 		thz_dev1 = NULL;
 	}
-
 	if (thz_dev2) {
 		mtk_thermal_zone_device_unregister(thz_dev2);
 		thz_dev2 = NULL;
@@ -1180,14 +1194,6 @@ static int __init tsallts_init(void)
 
     tsallts_dprintk("[tsallts_init] \n");
 
-	err = tsallts_register_thermal();
-    tsallts_dprintk("[tsallts_init] \n");
-
-	if (err)
-		goto err_unreg;
-
-    tsallts_dprintk( "tsallts_register_thermal:err=%x \n",err);
-
     tsallts_dir = mtk_thermal_get_proc_drv_therm_dir_entry();
     if (!tsallts_dir)
     {
@@ -1234,8 +1240,10 @@ static int __init tsallts_init(void)
 
 	return 0;
 
+    /* 
 	err_unreg:
-	tsallts_unregister_cooler();
+	    tsallts_unregister_cooler(); 
+	 */
 	return err;
 }
 
@@ -1243,7 +1251,7 @@ static void __exit tsallts_exit(void)
 {
 	tsallts_dprintk("[tsallts_exit] \n");
 	tsallts_unregister_thermal();
-	tsallts_unregister_cooler();
+	/* tsallts_unregister_cooler(); */
 }
 
 module_init(tsallts_init);

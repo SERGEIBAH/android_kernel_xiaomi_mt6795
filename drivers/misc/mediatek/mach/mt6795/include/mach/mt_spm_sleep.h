@@ -11,6 +11,7 @@ extern u32 spm_get_sleep_wakesrc(void);
 extern wake_reason_t spm_go_to_sleep(u32 spm_flags, u32 spm_data);
 
 extern bool spm_is_md_sleep(void);
+extern bool spm_is_md1_sleep(void);
 #if 0 // No connsys
 extern bool spm_is_conn_sleep(void);
 #endif

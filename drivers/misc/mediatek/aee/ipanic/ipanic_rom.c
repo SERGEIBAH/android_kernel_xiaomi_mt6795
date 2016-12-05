@@ -1,5 +1,4 @@
 #include <linux/kernel.h>
-#include <linux/stacktrace.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <asm/memory.h>
@@ -12,20 +11,20 @@
 #include <mach/wd_api.h>
 #include "ipanic.h"
 
-#define MAX_STACK_TRACE_DEPTH 32
-unsigned long ipanic_stack_entries[MAX_STACK_TRACE_DEPTH];
 
 static u32 ipanic_iv = 0xaabbccdd;
 static spinlock_t ipanic_lock;
 struct ipanic_ops *ipanic_ops;
 typedef int (*fn_next) (void *data, unsigned char *buffer, size_t sz_buf);
 static bool ipanic_enable = 1;
-static char ipanic_task_info[PAGE_SIZE];
 
 extern void mrdump_mini_per_cpu_regs(int cpu, struct pt_regs *regs);
 extern void mrdump_mini_ke_cpu_regs(struct pt_regs *regs);
 extern void mrdump_mini_add_misc(unsigned long addr, unsigned long size, unsigned long start, char *name);
 extern void mrdump_mini_ipanic_done(void);
+extern int mrdump_task_info(unsigned char *buffer, size_t sz_buf);
+extern void aee_rr_rec_exp_type(unsigned int type);
+extern unsigned int aee_rr_curr_exp_type(void);
 
 int __weak ipanic_atflog_buffer(void *data, unsigned char *buffer, size_t sz_buf) {
 	return 0;
@@ -84,59 +83,7 @@ static int ipanic_alog_buffer(void *data, unsigned char *buffer, size_t sz_buf);
 
 static int ipanic_current_task_info(void *data, unsigned char *buffer, size_t sz_buf)
 {
-	struct stack_trace trace;
-	int i, plen;
-	struct task_struct *tsk;
-	struct aee_process_info *cur_proc;
-	struct pt_regs *regs = (struct pt_regs *)data;
-
-	if (!virt_addr_valid(current_thread_info()))
-		return -1;
-	tsk = current_thread_info()->task;
-	if (!virt_addr_valid(tsk))
-		return -1;
-	cur_proc = (struct aee_process_info *)ipanic_task_info;
-	memset(cur_proc, 0, sizeof(struct aee_process_info));
-
-	/* Grab kernel task stack trace */
-	trace.nr_entries = 0;
-	trace.max_entries = MAX_STACK_TRACE_DEPTH;
-	trace.entries = ipanic_stack_entries;
-	trace.skip = 8;
-	save_stack_trace_tsk(tsk, &trace);
-	/* Skip the entries -  ipanic_save_current_tsk_info/save_stack_trace_tsk */
-	for (i = 0; i < trace.nr_entries; i++) {
-		int off = strlen(cur_proc->backtrace);
-		int plen = AEE_BACKTRACE_LENGTH - off;
-		if (plen > 16) {
-			snprintf(cur_proc->backtrace + off, plen, "[<%p>] %pS\n",
-				 (void *)ipanic_stack_entries[i], (void *)ipanic_stack_entries[i]);
-		}
-	}
-	if (regs) {
-		cur_proc->ke_frame.pc = (__u64) regs->reg_pc;
-		cur_proc->ke_frame.lr = (__u64) regs->reg_lr;
-	} else {
-		/* in case panic() is called without die */
-		/* Todo: a UT for this */
-		cur_proc->ke_frame.pc = ipanic_stack_entries[0];
-		cur_proc->ke_frame.lr = ipanic_stack_entries[1];
-	}
-	snprintf(cur_proc->ke_frame.pc_symbol, AEE_SZ_SYMBOL_S, "[<%p>] %pS",
-		 (void *)(unsigned long) cur_proc->ke_frame.pc, (void *)(unsigned long) cur_proc->ke_frame.pc);
-	snprintf(cur_proc->ke_frame.lr_symbol, AEE_SZ_SYMBOL_L, "[<%p>] %pS",
-		 (void *)(unsigned long) cur_proc->ke_frame.lr, (void *)(unsigned long) cur_proc->ke_frame.lr);
-	/* Current panic user tasks */
-	plen = 0;
-	while (tsk && (tsk->pid != 0) && (tsk->pid != 1)) {
-		/* FIXME: Check overflow ? */
-		plen += snprintf(cur_proc->process_path + plen, AEE_PROCESS_NAME_LENGTH,
-				 "[%s, %d]", tsk->comm, tsk->pid);
-		tsk = tsk->real_parent;
-	}
-	mrdump_mini_add_misc((unsigned long)cur_proc, sizeof(struct aee_process_info), 0, "PROC_CUR_TSK");
-	memcpy(buffer, cur_proc, sizeof(struct aee_process_info));
-	return sizeof(struct aee_process_info);
+	return mrdump_task_info(buffer, sz_buf);
 }
 
 #ifdef CONFIG_MTK_MMPROFILE_SUPPORT
@@ -176,11 +123,7 @@ const ipanic_dt_op_t ipanic_dt_ops[] = {
 	{"IPANIC_HEADER", 0, NULL},
 	{"SYS_KERNEL_LOG", __LOG_BUF_LEN, ipanic_klog_buffer},
 	{"SYS_WDT_LOG", WDT_LOG_LEN, ipanic_klog_buffer},
-#ifdef CONFIG_MTK_WQ_DEBUG
-	{"SYS_WQ_LOG", WQ_LOG_LEN, ipanic_klog_buffer},
-#else
 	{"SYS_WQ_LOG", 0, NULL},
-#endif
 	{"reserved", 0, NULL},
 	{"reserved", 0, NULL},
 	{"PROC_CUR_TSK", sizeof(struct aee_process_info), ipanic_current_task_info},
@@ -506,11 +449,12 @@ int ipanic(struct notifier_block *this, unsigned long event, void *ptr)
 {
 	struct ipanic_data_header *dheader;
 	struct kmsg_dumper dumper;
-    ipanic_atf_log_rec_t atf_log = {ATF_LOG_SIZE, 0, 0};
+	ipanic_atf_log_rec_t atf_log = {ATF_LOG_SIZE, 0, 0};
 	int dt;
 	int errno;
 	struct ipanic_header *ipanic_hdr;
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_IPANIC_START);
+	aee_rr_rec_exp_type(2);
 	bust_spinlocks(1);
 	spin_lock_irq(&ipanic_lock);
 	aee_disable_api();
@@ -536,9 +480,6 @@ int ipanic(struct notifier_block *this, unsigned long event, void *ptr)
 	aee_wdt_dump_info();
 	ipanic_klog_region(&dumper);
 	ipanic_data_to_sd(IPANIC_DT_WDT_LOG, &dumper);
-#ifdef CONFIG_MTK_WQ_DEBUG
-	mt_dump_wq_debugger();
-#endif
 	ipanic_klog_region(&dumper);
 	ipanic_data_to_sd(IPANIC_DT_WQ_LOG, &dumper);
 	ipanic_data_to_sd(IPANIC_DT_MMPROFILE, 0);
@@ -567,6 +508,7 @@ void ipanic_recursive_ke(struct pt_regs *regs, struct pt_regs *excp_regs, int cp
 	int errno;
 	struct kmsg_dumper dumper;
 	aee_nested_printf("minidump\n");
+	aee_rr_rec_exp_type(3);
 	bust_spinlocks(1);
 	flush_cache_all();
 #ifdef __aarch64__
@@ -660,11 +602,13 @@ static int ipanic_die(struct notifier_block *self, unsigned long cmd, void *ptr)
 	aee_disable_api();
 
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_KE_IPANIC_DIE);
+	aee_rr_rec_exp_type(2);
 	mrdump_mini_ke_cpu_regs(dargs->regs);
 	flush_cache_all();
 
+	if (aee_rr_curr_exp_type() == 2)
 	/* No return if mrdump is enable */
-	aee_kdump_reboot(AEE_REBOOT_MODE_KERNEL_OOPS, "Kernel Oops");
+		aee_kdump_reboot(AEE_REBOOT_MODE_KERNEL_OOPS, "Kernel Oops");
 
 	smp_send_stop();
 

@@ -6,7 +6,7 @@
 #include <linux/list.h>
 #include <linux/init.h>
 #include <linux/smp.h>
-#include <linux/mt_sched_mon.h>
+#include "mt_sched_mon.h"
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/hardirq.h>
@@ -408,6 +408,7 @@ void aee_smp_send_stop(void)
 #endif				/* #ifdef CONFIG_FIQ_GLUE */
 #endif				/* #ifdef CONFIG_SMP */
 
+void aee_rr_rec_exp_type(unsigned int type);
 void aee_wdt_irq_info(void)
 {
 	unsigned long long t;
@@ -461,7 +462,7 @@ void aee_wdt_irq_info(void)
 	/* avoid lock prove to dump_stack in __debug_locks_off() */
 	xchg(&debug_locks, 0);
 	aee_rr_rec_fiq_step(AEE_FIQ_STEP_WDT_IRQ_DONE);
-
+	aee_rr_rec_exp_type(1);
 	BUG();
 }
 

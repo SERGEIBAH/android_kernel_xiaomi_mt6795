@@ -105,7 +105,7 @@ static irqreturn_t spm_irq0_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t spm_irq_aux_handler(u32 irq_id)
+static irqreturn_t spm_irq_handler(u32 irq_id)
 {
 	u32 isr;
 	unsigned long flags;
@@ -122,37 +122,37 @@ static irqreturn_t spm_irq_aux_handler(u32 irq_id)
 
 static irqreturn_t spm_irq1_handler(int irq, void *dev_id)
 {
-	return spm_irq_aux_handler(1);
+	return spm_irq_handler(1);
 }
 
 static irqreturn_t spm_irq2_handler(int irq, void *dev_id)
 {
-	return spm_irq_aux_handler(2);
+	return spm_irq_handler(2);
 }
 
 static irqreturn_t spm_irq3_handler(int irq, void *dev_id)
 {
-	return spm_irq_aux_handler(3);
+	return spm_irq_handler(3);
 }
 
 static irqreturn_t spm_irq4_handler(int irq, void *dev_id)
 {
-	return spm_irq_aux_handler(4);
+	return spm_irq_handler(4);
 }
 
 static irqreturn_t spm_irq5_handler(int irq, void *dev_id)
 {
-	return spm_irq_aux_handler(5);
+	return spm_irq_handler(5);
 }
 
 static irqreturn_t spm_irq6_handler(int irq, void *dev_id)
 {
-	return spm_irq_aux_handler(6);
+	return spm_irq_handler(6);
 }
 
 static irqreturn_t spm_irq7_handler(int irq, void *dev_id)
 {
-	return spm_irq_aux_handler(7);
+	return spm_irq_handler(7);
 }
 
 static int spm_irq_register(void)
@@ -160,26 +160,26 @@ static int spm_irq_register(void)
 	int i, err, r = 0;
 #ifdef CONFIG_OF
 struct spm_irq_desc irqdesc[] = {
-                { .irq = 0, .handler = spm_irq0_handler, },
-                { .irq = 0, .handler = spm_irq1_handler, },
-                { .irq = 0, .handler = spm_irq2_handler, },
-                { .irq = 0, .handler = spm_irq3_handler, },
-                { .irq = 0, .handler = spm_irq4_handler, },
-                { .irq = 0, .handler = spm_irq5_handler, },
-                { .irq = 0, .handler = spm_irq6_handler, },
-                { .irq = 0, .handler = spm_irq7_handler, }
-        };
+		{ .irq = 0, .handler = spm_irq0_handler, },
+		{ .irq = 0, .handler = spm_irq1_handler, },
+		{ .irq = 0, .handler = spm_irq2_handler, },
+		{ .irq = 0, .handler = spm_irq3_handler, },
+		{ .irq = 0, .handler = spm_irq4_handler, },
+		{ .irq = 0, .handler = spm_irq5_handler, },
+		{ .irq = 0, .handler = spm_irq6_handler, },
+		{ .irq = 0, .handler = spm_irq7_handler, }
+	};
 
-    irqdesc[0].irq = SPM_IRQ0_ID;
-    irqdesc[1].irq = SPM_IRQ1_ID;
-    irqdesc[2].irq = SPM_IRQ2_ID;
-    irqdesc[3].irq = SPM_IRQ3_ID;
-    irqdesc[4].irq = SPM_IRQ4_ID;
-    irqdesc[5].irq = SPM_IRQ5_ID;
-    irqdesc[6].irq = SPM_IRQ6_ID;
-    irqdesc[7].irq = SPM_IRQ7_ID;
+	irqdesc[0].irq = SPM_IRQ0_ID;
+	irqdesc[1].irq = SPM_IRQ1_ID;
+	irqdesc[2].irq = SPM_IRQ2_ID;
+	irqdesc[3].irq = SPM_IRQ3_ID;
+	irqdesc[4].irq = SPM_IRQ4_ID;
+	irqdesc[5].irq = SPM_IRQ5_ID;
+	irqdesc[6].irq = SPM_IRQ6_ID;
+	irqdesc[7].irq = SPM_IRQ7_ID;
 #else
-	struct spm_irq_desc irqdesc[] = {
+struct spm_irq_desc irqdesc[] = {
 		{ .irq = SPM_IRQ0_ID, .handler = spm_irq0_handler, },
 		{ .irq = SPM_IRQ1_ID, .handler = spm_irq1_handler, },
 		{ .irq = SPM_IRQ2_ID, .handler = spm_irq2_handler, },
@@ -422,7 +422,7 @@ int spm_module_init(void)
 
 	get_wd_api(&wd_api);
 	if (wd_api->wd_spmwdt_mode_config) {
-		wd_api->wd_spmwdt_mode_config(WD_REQ_EN, WD_REQ_RST_MODE);
+		wd_api->wd_spmwdt_mode_config(WD_REQ_DIS, WD_REQ_RST_MODE);
 	} else {
 		spm_err("FAILED TO GET WD API\n");
 		r = -ENODEV;

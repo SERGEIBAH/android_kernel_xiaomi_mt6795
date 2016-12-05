@@ -53,6 +53,9 @@
 #define AKM09911_RETRY_COUNT	10
 #define AKM09911_DEFAULT_DELAY	100
 
+//PIN 12
+#define MAG_PIN            GPIO_MSE_EINT_PIN
+
 #define POWER_NONE_MACRO MT65XX_POWER_NONE
 
 /**************************
@@ -65,13 +68,23 @@
         #define MAGN_TAG                  "[Msensor] "
         #define MAGN_FUN(f)               printk(KERN_INFO MAGN_TAG"%s\n", __FUNCTION__)
         #define MAGN_ERR(fmt, args...)    printk(KERN_ERR  MAGN_TAG"%s %d : "fmt, __FUNCTION__, __LINE__, ##args)
-        #define MAGN_LOG(fmt, args...)    printk(KERN_INFO MAGN_TAG fmt, ##args)
+        #define MAGN_LOG(fmt, args...)    printk(KERN_NOTICE MAGN_TAG fmt, ##args)
     #else
         #define MAGN_TAG
         #define MAGN_FUN(f)               do {} while (0)
         #define MAGN_ERR(fmt, args...)    do {} while (0)
         #define MAGN_LOG(fmt, args...)    do {} while (0)
     #endif
+
+
+extern int bmi160_m_enable(int en);
+extern int bmi160_m_set_delay(u64 ns);
+extern int bmi160_m_open_report_data(int open);
+extern int bmi160_m_get_data(int* x ,int* y,int* z, int* status);
+extern int bmi160_o_enable(int en);
+extern int bmi160_o_set_delay(u64 ns);
+extern int bmi160_o_get_data(int* x ,int* y,int* z, int* status);
+extern int bmi160_o_open_report_data(int open);
 
 
 /* Addresses to scan -- protected by sense_data_mutex */
@@ -96,8 +109,17 @@ static struct i2c_client *this_client = NULL;
 
 /*----------------------------------------------------------------------------*/
 static const struct i2c_device_id akm09911_i2c_id[] = {{AKM09911_DEV_NAME,0},{}};
-static struct i2c_board_info __initdata i2c_akm09911={ I2C_BOARD_INFO("akm09911", (AKM09911_I2C_ADDRESS>>1))};
+//static struct i2c_board_info __initdata i2c_akm09911={ I2C_BOARD_INFO("akm09911", (AKM09911_I2C_ADDRESS>>1))};
+//static struct i2c_board_info __initdata i2c_akm09911={ I2C_BOARD_INFO("akm09911", 0x0D)};
 
+/* Maintain  cust info here */
+struct mag_hw mag_cust;
+static struct mag_hw *hw = &mag_cust;
+
+/* For  driver get cust info */
+struct mag_hw *get_cust_mag(void) {
+    return &mag_cust;
+}
 
 /*----------------------------------------------------------------------------*/
 static int akm09911_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id); 
@@ -162,6 +184,8 @@ static DEFINE_MUTEX(akm09911_i2c_mutex);
 
 static void akm09911_power(struct mag_hw *hw, unsigned int on) 
 {
+#ifdef __USE_LINUX_REGULATOR_FRAMEWORK__
+#else
 	static unsigned int power_on = 0;
 
 	if(hw->power_id != POWER_NONE_MACRO)
@@ -187,6 +211,7 @@ static void akm09911_power(struct mag_hw *hw, unsigned int on)
 		}
 	}
 	power_on = on;
+#endif
 }
 static long AKI2C_RxData(char *rxData, int length)
 {
@@ -1311,7 +1336,7 @@ static ssize_t store_trace_value(struct device_driver *ddri, const char *buf, si
 static ssize_t show_chip_orientation(struct device_driver *ddri, char *buf)
 {
     ssize_t  _tLength = 0;
-    struct mag_hw   *_ptAccelHw = get_cust_mag_hw();
+    struct mag_hw   *_ptAccelHw = hw;
 
     MAGN_LOG("[%s] default direction: %d\n", __FUNCTION__, _ptAccelHw->direction);
 
@@ -1707,7 +1732,7 @@ static long akm09911_unlocked_ioctl(struct file *file, unsigned int cmd,unsigned
 		case ECS_IOCTL_GET_LAYOUT_09911:
 			layout = atomic_read(&data->layout);
 			MAG_ERR( "layout=%d\r\n",layout);
-			if(copy_to_user(argp, &layout, sizeof(layout)))
+			if(copy_to_user(argp, &layout, sizeof(char)))
 			{
 				MAGN_LOG("copy_to_user failed.");
 				return -EFAULT;
@@ -1864,6 +1889,35 @@ static long akm09911_compat_ioctl(struct file *file, unsigned int cmd, unsigned 
 			 
 			 break;
 			 
+		 case COMPAT_ECS_IOCTL_GET_INFO:
+			 if(arg32 == NULL)
+			 {
+				 MAGN_LOG("invalid argument.");
+				 return -EINVAL;
+			 }
+
+			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_GET_INFO,
+							(unsigned long)(arg32));
+			 if (ret){
+			 	MAGN_LOG("ECS_IOCTL_GET_INFO unlocked_ioctl failed.");
+				return ret;
+			 }
+			 break;
+
+		 case COMPAT_ECS_IOCTL_GET_CONF:
+			 if(arg32 == NULL)
+			 {
+				 MAGN_LOG("invalid argument.");
+				 return -EINVAL;
+			 }
+
+			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_GET_CONF,
+							(unsigned long)(arg32));
+			 if (ret){
+			 	MAGN_LOG("ECS_IOCTL_GET_CONF unlocked_ioctl failed.");
+				return ret;
+			 }
+			 break;
 		 case COMPAT_ECS_IOCTL_SET_MODE:
 			 if(arg32 == NULL)
 			 {
@@ -1889,20 +1943,15 @@ static long akm09911_compat_ioctl(struct file *file, unsigned int cmd, unsigned 
 
 			 break;
 			 
-		 case COMPAT_ECS_IOCTL_SET_YPR:
-			 if(arg32 == NULL)
-			 {
-				 MAGN_LOG("invalid argument.");
-				 return -EINVAL;
-			 }		
+	    case COMPAT_ECS_IOCTL_SET_YPR_09911:
+				 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_SET_YPR_09911,
+								(unsigned long)(arg32));
+				 if (ret){
+					MAGN_LOG("ECS_IOCTL_SET_YPR_09911 unlocked_ioctl failed.");
+					return ret;
+				 }
 			 
-			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_SET_YPR,
-							(unsigned long)(arg32));
-			 if (ret){
-			 	MAGN_LOG("ECS_IOCTL_SET_YPR unlocked_ioctl failed.");
-				return ret;
-			 }
-			 break;
+				 break;
 		
 		 case COMPAT_ECS_IOCTL_GET_OPEN_STATUS:
 			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_GET_OPEN_STATUS,
@@ -1934,21 +1983,21 @@ static long akm09911_compat_ioctl(struct file *file, unsigned int cmd, unsigned 
 
 			 break;
 			 
-		 case COMPAT_ECS_IOCTL_GET_DELAY:
-			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_GET_DELAY,
+		 case COMPAT_ECS_IOCTL_GET_DELAY_09911:
+			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_GET_DELAY_09911,
 							(unsigned long)(arg32));
 			 if (ret){
-			 	MAGN_LOG("ECS_IOCTL_GET_DELAY unlocked_ioctl failed.");
+			 	MAGN_LOG("ECS_IOCTL_GET_DELAY_09911 unlocked_ioctl failed.");
 				return ret;
 			 }
 			 
 			 break;
 		
-		 case COMPAT_ECS_IOCTL_GET_LAYOUT:
-			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_GET_LAYOUT,
+		 case COMPAT_ECS_IOCTL_GET_LAYOUT_09911:
+			 ret = file->f_op->unlocked_ioctl(file, ECS_IOCTL_GET_LAYOUT_09911,
 							(unsigned long)arg32);
 			 if (ret){
-			 	MAGN_LOG("ECS_IOCTL_GET_LAYOUT unlocked_ioctl failed.");
+			 	MAGN_LOG("ECS_IOCTL_GET_LAYOUT_09911 unlocked_ioctl failed.");
 				return ret;
 			 }
 			 
@@ -2849,9 +2898,9 @@ static int akm09911_m_get_data(int* x ,int* y,int* z, int* status)
 {
 	mutex_lock(&sensor_data_mutex);
 	
-	*x = sensor_data[9] * CONVERT_M;
-	*y = sensor_data[10] * CONVERT_M;
-	*z = sensor_data[11] * CONVERT_M;
+	*x = sensor_data[5] * CONVERT_M;
+	*y = sensor_data[6] * CONVERT_M;
+	*z = sensor_data[7] * CONVERT_M;
 	*status = sensor_data[4];
 		
 	mutex_unlock(&sensor_data_mutex);		
@@ -2937,7 +2986,15 @@ static int akm09911_i2c_probe(struct i2c_client *client, const struct i2c_device
 		goto exit;
 	}
 
-	data->hw = get_cust_mag_hw();		
+        mt_set_gpio_mode(MAG_PIN, 0);
+        mt_set_gpio_dir(MAG_PIN, 1);
+        mt_set_gpio_out(MAG_PIN, 0);
+        msleep(5);
+        mt_set_gpio_out(MAG_PIN, 0);
+        msleep(5);
+
+	data->hw = get_cust_mag_hw();
+
 	atomic_set(&data->layout, data->hw->direction);
 	atomic_set(&data->trace, 0);	
 	mutex_init(&sense_data_mutex);
@@ -2972,12 +3029,12 @@ static int akm09911_i2c_probe(struct i2c_client *client, const struct i2c_device
 	}    
 
 	ctl.is_use_common_factory = false;
-	ctl.m_enable = akm09911_m_enable;
-	ctl.m_set_delay  = akm09911_m_set_delay;
-	ctl.m_open_report_data = akm09911_m_open_report_data;
-	ctl.o_enable = akm09911_o_enable;
-	ctl.o_set_delay  = akm09911_o_set_delay;
-	ctl.o_open_report_data = akm09911_o_open_report_data;
+	ctl.m_enable = bmi160_m_enable;//akm09911_m_enable;
+	ctl.m_set_delay  = bmi160_m_set_delay;//akm09911_m_set_delay;
+	ctl.m_open_report_data = bmi160_m_open_report_data;//akm09911_m_open_report_data;
+	ctl.o_enable = bmi160_o_enable;//akm09911_o_enable;
+	ctl.o_set_delay  = bmi160_o_set_delay;//akm09911_o_set_delay;
+	ctl.o_open_report_data = bmi160_o_open_report_data;//akm09911_o_open_report_data;
 	ctl.is_report_input_direct = false;
 	ctl.is_support_batch = data->hw->is_batch_supported;
 	
@@ -2990,8 +3047,8 @@ static int akm09911_i2c_probe(struct i2c_client *client, const struct i2c_device
 
 	mag_data.div_m = CONVERT_M_DIV;
 	mag_data.div_o = CONVERT_O_DIV;
-	mag_data.get_data_o = akm09911_o_get_data;
-	mag_data.get_data_m = akm09911_m_get_data;
+	mag_data.get_data_o = bmi160_o_get_data;//akm09911_o_get_data;
+	mag_data.get_data_m = bmi160_m_get_data;//akm09911_m_get_data;
 
 	err = mag_register_data_path(&mag_data);
 	if(err)
@@ -3000,7 +3057,7 @@ static int akm09911_i2c_probe(struct i2c_client *client, const struct i2c_device
 		goto exit_kfree;
 	}
 
-#if CONFIG_HAS_EARLYSUSPEND
+#if defined(CONFIG_HAS_EARLYSUSPEND) && defined(CONFIG_EARLYSUSPEND) 
 	data->early_drv.level    = EARLY_SUSPEND_LEVEL_STOP_DRAWING - 2,
 	data->early_drv.suspend  = akm09911_early_suspend,
 	data->early_drv.resume   = akm09911_late_resume,    
@@ -3041,7 +3098,6 @@ static int akm09911_i2c_remove(struct i2c_client *client)
 /*----------------------------------------------------------------------------*/
 static int akm09911_remove(void)
 {
-	struct mag_hw *hw = get_cust_mag_hw();
  
 	akm09911_power(hw, 0);    
 	atomic_set(&dev_open_count, 0);  
@@ -3051,7 +3107,6 @@ static int akm09911_remove(void)
 
 static int	akm09911_local_init(void)
 {
-	struct mag_hw *hw = get_cust_mag_hw();
 
 	akm09911_power(hw, 1);
 	if(i2c_add_driver(&akm09911_i2c_driver))
@@ -3066,11 +3121,23 @@ static int	akm09911_local_init(void)
 	return 0;
 }
 
+struct i2c_board_info i2c_akm09911={ I2C_BOARD_INFO("akm09911", 0xC)};
+
 /*----------------------------------------------------------------------------*/
 static int __init akm09911_init(void)
 {
-    struct mag_hw *hw = get_cust_mag_hw();
-	MAGN_LOG("[%s]: i2c_number=%d\n",__func__,hw->i2c_num); 
+    const char *name = "mediatek,AKM09911";
+//    hw =	get_mag_dts_func(name, hw);
+//	if (!hw)
+		hw = get_cust_mag_hw();
+        mt_set_gpio_mode(MAG_PIN, 0);
+        mt_set_gpio_dir(MAG_PIN, 1);
+        mt_set_gpio_out(MAG_PIN, 0);
+        msleep(5);
+        mt_set_gpio_out(MAG_PIN, 0);
+        msleep(5);
+
+	MAGN_LOG("[%s]: i2c_number=%d,i2c_addr=0x%x\n",__func__,hw->i2c_num,hw->i2c_addr[0]);
 	i2c_register_board_info(hw->i2c_num, &i2c_akm09911, 1);
 	mag_driver_add(&akm09911_init_info);
 	return 0; 

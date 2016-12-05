@@ -63,7 +63,7 @@ struct pwm_spec_config {
 			U32 SEND_DATA1;
 			U32 WAVE_NUM;
 		} PWM_MODE_FIFO_REGS;
-/*
+
 		//for memory mode
 		struct _PWM_MODE_MEMORY_REGS {
 			U32 IDLE_VALUE;
@@ -103,12 +103,14 @@ struct pwm_spec_config {
 			U16 PWM5_DELAY_DUR;
 			U32 PWM5_DELAY_CLK;
 		}PWM_MODE_DELAY_REGS;
-*/
+
 	};
 };
 
 S32 pwm_set_easy_config(struct pwm_easy_config *conf);
 S32 pwm_set_spec_config(struct pwm_spec_config *conf);
+
+
 
 void mt_pwm_dump_regs(void);
 void mt_pwm_disable(U32 pwm_no, BOOL pmic_pad);
@@ -122,4 +124,8 @@ void mt_set_pwm_3dlcm_inv(U32 pwm_no, BOOL inv);
 //void mt_set_pwm_3dlcm_base(U32 pwm_no);
 
 //void mt_pwm_26M_clk_enable(U32 enable);
+S32 mt_set_intr_ack ( U32 pwm_intr_ack_bit );
+S32 mt_set_intr_enable(U32 pwm_intr_enable_bit);
+S32 mt_get_intr_status(U32 pwm_intr_status_bit);
+
 #endif

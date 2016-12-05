@@ -206,9 +206,48 @@ extern LCM_DRIVER otm9605a_qhd_dsi_vdo_drv;
 extern LCM_DRIVER ili9806e_dsi_vdo_fwvga_drv;
 extern LCM_DRIVER otm1906a_fhd_dsi_cmd_auto_lcm_drv;
 extern LCM_DRIVER otm1902a_fhd_dsi_cmd_tianma_lcm_drv;
+/* Vanzo:dingge on: Thu, 30 Apr 2015 14:05:15 +0800
+ * TODO: add new lcm nt35596
+ */
+extern LCM_DRIVER nt35596_auo55_boyi_fhd_lcm_drv;
+// End of Vanzo: dingge
 
+/* Vanzo:wangfei on: Tue, 07 Apr 2015 11:14:55 +0800
+ * port from wuzhiyong
+ */
+extern LCM_DRIVER nt35695_auo52_truly_fhd_lcm_drv;
+extern LCM_DRIVER nt35596_fhd_tianma_phantom_lcm_drv;
+extern LCM_DRIVER nt35596_fhd_auo_phantom_lcm_drv;
+extern LCM_DRIVER nt35532_fhd_boe_vdo_lcm_drv;
+// End of Vanzo:wangfei
 LCM_DRIVER* lcm_driver_list[] = 
 {
+/* Vanzo:dingge on: Thu, 30 Apr 2015 14:05:26 +0800
+ * TODO: add new lcm nt35596
+ */
+#if defined(NT35596_AUO55_BOYI_FHD)
+    &nt35596_auo55_boyi_fhd_lcm_drv,
+#endif
+// End of Vanzo: dingge
+
+/* Vanzo:wangfei on: Tue, 07 Apr 2015 11:15:14 +0800
+ * port from wuzhiyong bootup
+ */
+#if defined(NT35596_FHD_TIANMA_PHANTOM)
+	&nt35596_fhd_tianma_phantom_lcm_drv,
+#endif
+#if defined(NT35596_FHD_AUO_PHANTOM)
+	&nt35596_fhd_auo_phantom_lcm_drv,
+#endif
+
+#if defined(NT35596_FHD_AUO_PHANTOM)
+        &nt35532_fhd_boe_vdo_lcm_drv,
+#endif
+
+#if defined(NT35695_AUO52_TRULY_FHD)
+    &nt35695_auo52_truly_fhd_lcm_drv,
+#endif
+// End of Vanzo:wangfei
 #if defined(OTM1284A_HD720_DSI_VDO_TM)
 	&otm1284a_hd720_dsi_vdo_tm_lcm_drv,
 #endif
@@ -948,12 +987,11 @@ LCM_DRIVER* lcm_driver_list[] =
 
 unsigned int lcm_count = sizeof(lcm_driver_list)/sizeof(LCM_DRIVER*);
 LCM_COMPILE_ASSERT(0 != sizeof(lcm_driver_list)/sizeof(LCM_DRIVER*));
-#if defined(NT35520_HD720_DSI_CMD_TM) | defined(NT35520_HD720_DSI_CMD_BOE) | defined(NT35521_HD720_DSI_VDO_BOE) | defined(NT35521_HD720_DSI_VIDEO_TM)
+#if defined(NT35520_HD720_DSI_CMD_TM) | defined(NT35520_HD720_DSI_CMD_BOE) | defined(NT35521_HD720_DSI_VDO_BOE) | defined(NT35521_HD720_DSI_VIDEO_TM) | defined(NT35596_FHD_TIANMA_PHANTOM) | defined(NT35596_FHD_AUO_PHANTOM) | defined(NT35596_FHD_BOE_PHANTOM)
 #ifdef BUILD_LK
 extern void mdelay(unsigned long msec);
 #endif
 static unsigned char lcd_id_pins_value = 0xFF;
-
 
 /******************************************************************************
 Function:       which_lcd_module_triple

@@ -23,7 +23,6 @@
 #define CONFIG_MTK_OTG_PMIC_BOOST_5V
 #endif
 
-
 #undef DRV_Reg32
 #undef DRV_WriteReg32
 #include <mach/upmu_common.h>
@@ -48,6 +47,15 @@
 
 #ifdef CONFIG_MTK_FPGA
 #include <linux/mu3phy/mtk-phy.h>
+#endif
+
+#ifdef CONFIG_USB_MTK_DUALMODE
+#ifdef CONFIG_MTK_OTG_PMIC_BOOST_5V
+#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+#include <linux/kobject.h>
+#include <linux/miscdevice.h>
+#endif
+#endif
 #endif
 
 #define mtk_xhci_mtk_log(fmt, args...) \
@@ -85,6 +93,7 @@ static enum idpin_state mtk_idpin_cur_stat = IDPIN_OUT;
 static struct switch_dev mtk_otg_state;
 
 static struct delayed_work mtk_xhci_delaywork;
+
 int mtk_iddig_debounce = 10;
 module_param(mtk_iddig_debounce, int, 0644);
 
@@ -105,7 +114,7 @@ static bool mtk_is_charger_4_vol(void)
 	int vol = battery_meter_get_charger_voltage();
 	mtk_xhci_mtk_log("voltage(%d)\n", vol);
 
-#if defined(CONFIG_USBIF_COMPLIANCE) || defined(CONFIG_MTK_USB_EVB_BOARD)
+#if defined(CONFIG_USBIF_COMPLIANCE) || defined(CONFIG_POWER_EXT)
 	return false ;
 #else
 	return (vol > 4000) ? true : false;
@@ -119,6 +128,17 @@ bool mtk_is_usb_id_pin_short_gnd(void)
 
 #ifdef CONFIG_MTK_OTG_PMIC_BOOST_5V
 #define PMIC_REG_BAK_NUM (10)
+
+#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+#define OC_DETECTOR_TIMER (2000)
+static struct delayed_work mtk_xhci_oc_delaywork;
+
+static struct miscdevice xhci_misc_uevent = {
+         .minor = MISC_DYNAMIC_MINOR,
+         .name = "xhci_misc_uevent",
+         .fops = NULL,
+};
+#endif
 
 extern U32 pmic_read_interface(U32 RegNum, U32 * val, U32 MASK, U32 SHIFT);
 extern U32 pmic_config_interface(U32 RegNum, U32 val, U32 MASK, U32 SHIFT);
@@ -168,7 +188,14 @@ static void mtk_enable_pmic_otg_mode(void)
 	pmic_config_interface(0x803E, 0x1, 0x1, 2);
 	pmic_config_interface(0x803E, 0x1, 0x1, 3);
 	pmic_config_interface(0x803E, 0x3, 0x3, 8);
+
+	#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+	/* Current limit is on */
+	pmic_config_interface(0x803E, 0x1, 0x1, 10);
+	#else
 	pmic_config_interface(0x803E, 0x0, 0x1, 10);
+	#endif
+	
 	pmic_config_interface(0x8044, 0x3, 0x3, 0);
 	pmic_config_interface(0x8044, 0x3, 0x7, 8);
 	pmic_config_interface(0x8044, 0x1, 0x1, 11);
@@ -188,6 +215,9 @@ static void mtk_enable_pmic_otg_mode(void)
 		pmic_read_interface(0x8060, &val, 0x1, 14);
 	}
 
+	#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+	schedule_delayed_work_on(0, &mtk_xhci_oc_delaywork, msecs_to_jiffies(OC_DETECTOR_TIMER));
+	#endif
 	mtk_xhci_mtk_log("set pmic power on, done\n");
 }
 
@@ -216,9 +246,51 @@ static void mtk_disable_pmic_otg_mode(void)
 
 	/* restore PMIC registers */
 	pmic_restore_regs();
-
+	#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+	cancel_delayed_work(&mtk_xhci_oc_delaywork);
+	#endif
 	mtk_xhci_mtk_log("set pimc power off, done\n");
 }
+
+#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+void xhci_send_event(char * event)
+{
+	char udev_event[128];
+	char *envp[] = {udev_event, NULL };
+	int ret ;
+
+	snprintf(udev_event, 128, "XHCI_MISC_UEVENT=%s",event);
+	mtk_xhci_mtk_log("send %s in %s\n", udev_event, kobject_get_path(&xhci_misc_uevent.this_device->kobj, GFP_KERNEL));
+	ret = kobject_uevent_env(&xhci_misc_uevent.this_device->kobj, KOBJ_CHANGE, envp);
+	if (ret < 0)
+		mtk_xhci_mtk_log("fail, ret(%d)\n", ret);
+}
+
+static bool mtk_is_over_current(void)
+{
+	int vol = battery_meter_get_charger_voltage();
+	
+	if(vol < 4200){
+		mtk_xhci_mtk_log("over current occurs, voltage(%d)\n", vol);
+		return true;
+	}
+
+	return false;
+}
+
+static void mtk_xhci_oc_detector(struct work_struct *work)
+{
+	int ret;
+	
+	if(mtk_is_over_current()){
+		xhci_send_event("OVER_CURRENT");
+		mtk_disable_pmic_otg_mode();
+	}
+	else{
+		ret = schedule_delayed_work_on(0, &mtk_xhci_oc_delaywork, msecs_to_jiffies(OC_DETECTOR_TIMER));
+	}
+}
+#endif
 
 #endif
 
@@ -266,6 +338,17 @@ static int mtk_xhci_hcd_init(void)
 		printk(KERN_ERR "Problem creating xhci attributes.\n");
 		goto unreg_plat;
 	}
+	
+	#ifdef CONFIG_MTK_OTG_PMIC_BOOST_5V
+	#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+	retval = misc_register(&xhci_misc_uevent);
+	if (retval){
+		printk(KERN_ERR "create the xhci_uevent_device fail, ret(%d)\n", retval) ;
+		goto unreg_attrs;
+	}	
+	#endif
+	#endif
+	
 	/*
 	 * Check the compiler generated sizes of structures that must be laid
 	 * out in specific ways for hardware access.
@@ -284,7 +367,12 @@ static int mtk_xhci_hcd_init(void)
 	/* xhci_run_regs has eight fields and embeds 128 xhci_intr_regs */
 	BUILD_BUG_ON(sizeof(struct xhci_run_regs) != (8 + 8 * 128) * 32 / 8);
 	return 0;
-
+#ifdef CONFIG_MTK_OTG_PMIC_BOOST_5V
+#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+unreg_attrs:
+	xhci_attrs_exit();
+#endif
+#endif
 unreg_plat:
 	xhci_unregister_plat();
 	return retval;
@@ -292,8 +380,14 @@ unreg_plat:
 
 static void mtk_xhci_hcd_cleanup(void)
 {
-	xhci_unregister_plat();
+	#ifdef CONFIG_MTK_OTG_PMIC_BOOST_5V
+	#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+	misc_deregister(&xhci_misc_uevent);
+	#endif
+	#endif
+	
 	xhci_attrs_exit();
+	xhci_unregister_plat();
 }
 
 static void mtk_xhci_imod_set(u32 imod)
@@ -305,6 +399,8 @@ static void mtk_xhci_imod_set(u32 imod)
 	temp |= imod;
 	xhci_writel(mtk_xhci, temp, &mtk_xhci->ir_set->irq_control);
 }
+
+extern void usb20_pll_settings(bool host, bool forceOn);
 
 static int mtk_xhci_driver_load(void)
 {
@@ -330,6 +426,10 @@ static int mtk_xhci_driver_load(void)
 #else
 	enableXhciAllPortPower(mtk_xhci);
 #endif
+#endif
+	/* USB PLL Force settings */
+#ifdef CONFIG_PROJECT_PHY
+	usb20_pll_settings(true, true);
 #endif
 
 	return 0;
@@ -411,7 +511,10 @@ void mtk_xhci_mode_switch(struct work_struct *work)
 				mtk_xhci_mtk_log("wait, hub is still active, ep cnt %d !!!\n", mtk_ep_count);
 				return;
 			}
-
+			/* USB PLL Force settings */
+#ifdef CONFIG_PROJECT_PHY
+			usb20_pll_settings(true, false);
+#endif
 			mtk_xhci_driver_unload();
 			is_pwoff = false;
 			is_load = false;
@@ -453,6 +556,11 @@ int mtk_xhci_eint_iddig_init(void)
 	struct device_node *node;
 	int iddig_gpio;
 
+    mt_set_gpio_mode(GPIO_OTG_IDDIG_EINT_PIN,GPIO_OTG_IDDIG_EINT_PIN_M_IDDIG);
+    mt_set_gpio_dir(GPIO_OTG_IDDIG_EINT_PIN,GPIO_DIR_IN);
+    mt_set_gpio_pull_enable(GPIO_OTG_IDDIG_EINT_PIN,GPIO_PULL_ENABLE);
+    mt_set_gpio_pull_select(GPIO_OTG_IDDIG_EINT_PIN,GPIO_PULL_UP);
+
 	node = of_find_compatible_node(NULL, NULL, "mediatek,USB3_XHCI");
 	if(node){
 		retval = of_property_read_u32(node, "iddig-gpio-num", &iddig_gpio);
@@ -469,6 +577,11 @@ int mtk_xhci_eint_iddig_init(void)
 	}
 
 	INIT_DELAYED_WORK(&mtk_xhci_delaywork, mtk_xhci_mode_switch);
+	#ifdef CONFIG_MTK_OTG_PMIC_BOOST_5V
+	#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+	INIT_DELAYED_WORK(&mtk_xhci_oc_delaywork, mtk_xhci_oc_detector);
+	#endif
+	#endif
 
 	mtk_idpin_irqnum = mt_gpio_to_irq(iddig_gpio);
 
@@ -498,6 +611,11 @@ void mtk_xhci_eint_iddig_deinit(void)
 	free_irq(mtk_idpin_irqnum, NULL);
 
 	cancel_delayed_work(&mtk_xhci_delaywork);
+	#ifdef CONFIG_MTK_OTG_PMIC_BOOST_5V
+	#ifdef CONFIG_MTK_OTG_OC_DETECTOR
+	cancel_delayed_work(&mtk_xhci_oc_delaywork);
+	#endif
+	#endif
 
 	mtk_idpin_cur_stat = IDPIN_OUT;
 
@@ -550,7 +668,6 @@ void mtk_xhci_set(struct usb_hcd *hcd, struct xhci_hcd *xhci)
 	sif_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, XHCI_SIF_REGS_ADDR_RES_NAME);
 	if (!sif_res){
 		printk("%s(%d): cannot get sif resources\n", __func__, __LINE__);
-		return -ENODEV;
 	}
 
 	xhci->sif_regs = (unsigned long)ioremap(sif_res->start, resource_size(sif_res));
@@ -561,7 +678,6 @@ void mtk_xhci_set(struct usb_hcd *hcd, struct xhci_hcd *xhci)
 	sif2_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, XHCI_SIF2_REGS_ADDR_RES_NAME);
 	if (!sif2_res){
 		printk("%s(%d): cannot get sif2 resources\n", __func__, __LINE__);
-		return -ENODEV;
 	}
 
 	xhci->sif2_regs = (unsigned long)ioremap(sif2_res->start, resource_size(sif2_res));
@@ -574,9 +690,9 @@ void mtk_xhci_set(struct usb_hcd *hcd, struct xhci_hcd *xhci)
 }
 
 void mtk_xhci_reset(struct xhci_hcd *xhci){
-	iounmap(xhci->sif_regs);
+	iounmap((volatile void __iomem *)xhci->sif_regs);
 	mtk_xhci_mtk_log("iounmap, sif_reg, 0x%p\n", (void *)xhci->sif_regs);
-	iounmap(xhci->sif2_regs);
+	iounmap((volatile void __iomem *)xhci->sif2_regs);
 	mtk_xhci_mtk_log("iounmap, sif2_reg, 0x%p\n", (void *)xhci->sif2_regs);
 	mtk_xhci = NULL;
 }
